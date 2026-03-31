@@ -1,0 +1,216 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Profile {
+  id         String   @id @default(uuid()) @db.Uuid
+  user_id    String   @unique @db.Uuid
+  full_name  String
+  email      String?
+  created_at DateTime @default(now())
+  updated_at DateTime @default(now())
+
+  @@map("profiles")
+}
+
+model UserRole {
+  id      String  @id @default(uuid()) @db.Uuid
+  user_id String  @db.Uuid
+  role    AppRole
+
+  @@unique([user_id, role])
+  @@map("user_roles")
+}
+
+model Category {
+  id         String    @id @default(uuid()) @db.Uuid
+  name       String
+  icon       String?
+  created_at DateTime  @default(now())
+  updated_at DateTime  @default(now())
+  products   Product[]
+
+  @@map("categories")
+}
+
+model Product {
+  id          String      @id @default(uuid()) @db.Uuid
+  name        String
+  category_id String?     @db.Uuid
+  price       Decimal     @db.Decimal(10, 2)
+  active      Boolean     @default(true)
+  image       String?
+  description String?
+  created_at  DateTime    @default(now())
+  updated_at  DateTime    @default(now())
+  order_items OrderItem[]
+  category    Category?   @relation(fields: [category_id], references: [id])
+
+  @@index([category_id])
+  @@map("products")
+}
+
+model Floor {
+  id         String   @id @default(uuid()) @db.Uuid
+  name       String
+  created_at DateTime @default(now())
+  updated_at DateTime @default(now())
+  tables     Table[]
+
+  @@map("floors")
+}
+
+model Table {
+  id                     String      @id @default(uuid()) @db.Uuid
+  floor_id               String      @db.Uuid
+  table_number           String
+  seats                  Int
+  qr_token               String
+  active                 Boolean     @default(true)
+  status                 TableStatus @default(available)
+  customer_session_token String?     @unique
+  created_at             DateTime    @default(now())
+  updated_at             DateTime    @default(now())
+  orders                 Order[]
+  floor                  Floor       @relation(fields: [floor_id], references: [id])
+
+  @@index([floor_id])
+  @@map("tables")
+}
+
+model Session {
+  id           String    @id @default(uuid()) @db.Uuid
+  opened_at    DateTime  @default(now())
+  closed_at    DateTime?
+  total_sales  Decimal   @default(0) @db.Decimal(12, 2)
+  orders_count Int       @default(0)
+  is_active    Boolean   @default(true)
+  created_at   DateTime  @default(now())
+  updated_at   DateTime  @default(now())
+  orders       Order[]
+
+  @@map("sessions")
+}
+
+model Order {
+  id             String        @id @default(uuid()) @db.Uuid
+  invoice_number String        @unique
+  table_id       String        @db.Uuid
+  session_id     String        @db.Uuid
+  source         OrderSource
+  status         OrderStatus
+  kitchen_status KitchenStatus @default(to_cook)
+  payment_status PaymentStatus
+  subtotal       Decimal       @default(0) @db.Decimal(12, 2)
+  discount       Decimal       @default(0) @db.Decimal(12, 2)
+  taxable_amount Decimal       @default(0) @db.Decimal(12, 2)
+  cgst_rate      Decimal       @default(0) @db.Decimal(5, 2)
+  sgst_rate      Decimal       @default(0) @db.Decimal(5, 2)
+  cgst_amount    Decimal       @default(0) @db.Decimal(12, 2)
+  sgst_amount    Decimal       @default(0) @db.Decimal(12, 2)
+  total_amount   Decimal       @db.Decimal(12, 2)
+  created_at     DateTime      @default(now())
+  customer_name  String?
+  customer_email String?
+  customer_phone String?
+  items          OrderItem[]
+  session        Session       @relation(fields: [session_id], references: [id])
+  table          Table         @relation(fields: [table_id], references: [id])
+  payments       Payment[]
+
+  @@index([table_id])
+  @@index([session_id])
+  @@map("orders")
+}
+
+model OrderItem {
+  id         String  @id @default(uuid()) @db.Uuid
+  order_id   String  @db.Uuid
+  product_id String  @db.Uuid
+  quantity   Int
+  price      Decimal @db.Decimal(10, 2)
+  notes      String?
+  order      Order   @relation(fields: [order_id], references: [id])
+  product    Product @relation(fields: [product_id], references: [id])
+
+  @@index([order_id])
+  @@index([product_id])
+  @@map("order_items")
+}
+
+model Payment {
+  id         String        @id @default(uuid()) @db.Uuid
+  order_id   String        @db.Uuid
+  method     PaymentMethod
+  amount     Decimal       @db.Decimal(12, 2)
+  status     PaymentState  @default(pending)
+  created_at DateTime      @default(now())
+  order      Order         @relation(fields: [order_id], references: [id])
+
+  @@index([order_id])
+  @@map("payments")
+}
+
+model POSConfig {
+  id              String   @id @default(uuid()) @db.Uuid
+  restaurant_name String
+  gstin           String?
+  upi_id          String?
+  currency        String
+  tax_rate        Decimal  @db.Decimal(5, 2)
+  created_at      DateTime @default(now())
+  updated_at      DateTime @default(now())
+
+  @@map("pos_config")
+}
+
+enum AppRole {
+  admin
+  cashier
+  kitchen
+}
+
+enum TableStatus {
+  available
+  occupied
+  pending_confirmation
+}
+
+enum OrderSource {
+  pos
+  customer
+}
+
+enum OrderStatus {
+  pending_confirmation
+  confirmed
+  cancelled
+}
+
+enum KitchenStatus {
+  to_cook
+  preparing
+  completed
+}
+
+enum PaymentStatus {
+  paid
+  unpaid
+}
+
+enum PaymentMethod {
+  cash
+  digital
+  upi
+}
+
+enum PaymentState {
+  pending
+  completed
+  failed
+}
