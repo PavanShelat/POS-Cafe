@@ -32,3 +32,5 @@ supabase/.temp
 *.njsproj
 *.sln
 *.sw?
+
+docs/

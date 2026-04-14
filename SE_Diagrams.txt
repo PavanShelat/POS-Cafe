@@ -1,5 +1,0 @@
-Class Diagram
-Use case Diagram -> [use_case_diagram.md](use_case_diagram.md)
-DFD
-Data Dictionary
-Activity Diagram
