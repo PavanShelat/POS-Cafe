@@ -149,10 +149,15 @@ model Payment {
   method     PaymentMethod
   amount     Decimal       @db.Decimal(12, 2)
   status     PaymentState  @default(pending)
+  provider   String?
+  provider_order_id   String?
+  provider_payment_id String?
+  provider_signature  String?
   created_at DateTime      @default(now())
   order      Order         @relation(fields: [order_id], references: [id])
 
   @@index([order_id])
+  @@index([provider_order_id])
   @@map("payments")
 }
 

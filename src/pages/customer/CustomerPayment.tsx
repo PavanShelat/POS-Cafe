@@ -11,7 +11,6 @@ import { calculateCartSubtotal, calculateTaxSummary } from '@/lib/tax';
 import {
   ArrowLeft,
   CreditCard,
-  QrCode,
   Loader2,
   CheckCircle,
   Coffee,
@@ -20,9 +19,28 @@ import {
 import { cn } from '@/lib/utils';
 
 const paymentMethods: { id: PaymentMethod; label: string; icon: typeof CreditCard; description: string }[] = [
-  { id: 'upi', label: 'UPI / QR', icon: QrCode, description: 'Pay using any UPI app' },
-  { id: 'digital', label: 'Card / Net Banking', icon: CreditCard, description: 'Debit/Credit card or Internet Banking' },
+  { id: 'upi', label: 'UPI', icon: CreditCard, description: 'Pay via UPI on Razorpay Checkout' },
+  { id: 'digital', label: 'Card / Net Banking', icon: CreditCard, description: 'Pay via Razorpay Checkout' },
 ];
+
+function loadRazorpayScript(): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (window.Razorpay) return resolve();
+    const existing = document.querySelector<HTMLScriptElement>('script[data-razorpay="checkout"]');
+    if (existing) {
+      existing.addEventListener('load', () => resolve());
+      existing.addEventListener('error', () => reject(new Error('Failed to load Razorpay Checkout')));
+      return;
+    }
+    const script = document.createElement('script');
+    script.src = 'https://checkout.razorpay.com/v1/checkout.js';
+    script.async = true;
+    script.dataset.razorpay = 'checkout';
+    script.addEventListener('load', () => resolve());
+    script.addEventListener('error', () => reject(new Error('Failed to load Razorpay Checkout')));
+    document.body.appendChild(script);
+  });
+}
 
 export default function CustomerPayment() {
   const { tableToken } = useParams();
@@ -64,33 +82,114 @@ export default function CustomerPayment() {
 
     const customerSessionToken = sessionStorage.getItem('customerSessionToken');
 
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    if (!customerSessionToken) {
+      setSessionError('Your ordering session has expired. Please ask a staff member to unlock your table again.');
+      setIsProcessing(false);
+      return;
+    }
 
     if (table) {
       try {
-        const data = await apiPost<{ order: { id: string } }>('/api/orders', {
-          table_id: table.id,
-          source: 'customer',
-          customer_name: customerName.trim(),
-          customer_email: customerEmail.trim(),
-          customer_phone: customerPhone || undefined,
-          discount: 0,
-          payment_status: 'paid',
+        let orderId = sessionStorage.getItem('customerPendingOrderId');
+
+        if (!orderId) {
+          const data = await apiPost<{ order: { id: string } }>('/api/orders', {
+            table_id: table.id,
+            source: 'customer',
+            customer_name: customerName.trim(),
+            customer_email: customerEmail.trim(),
+            customer_phone: customerPhone || undefined,
+            discount: 0,
+            payment_status: 'unpaid',
+            payment_method: paymentMethod,
+            customer_session_token: customerSessionToken,
+            items: cart.map(item => ({
+              product_id: item.product.id,
+              quantity: item.quantity,
+              notes: item.notes,
+            })),
+          }, { auth: false });
+          orderId = data.order.id;
+          sessionStorage.setItem('customerPendingOrderId', orderId);
+        }
+
+        const razorpayData = await apiPost<{
+          keyId: string;
+          razorpayOrderId: string;
+          amountPaise: number;
+          currency: string;
+          name: string;
+        }>('/api/payments/razorpay/order', {
+          orderId,
           payment_method: paymentMethod,
           customer_session_token: customerSessionToken,
-          items: cart.map(item => ({
-            product_id: item.product.id,
-            quantity: item.quantity,
-            notes: item.notes,
-          })),
-        });
-        sessionStorage.setItem('customerOrderId', data.order.id);
+        }, { auth: false });
+
+        await loadRazorpayScript();
+
+        if (!window.Razorpay) {
+          throw new Error('Razorpay Checkout failed to load');
+        }
+
+        const options: RazorpayCheckoutOptions = {
+          key: razorpayData.keyId,
+          order_id: razorpayData.razorpayOrderId,
+          amount: razorpayData.amountPaise,
+          currency: razorpayData.currency,
+          name: razorpayData.name,
+          description: `Table ${table.table_number}`,
+          prefill: {
+            name: customerName.trim(),
+            email: customerEmail.trim(),
+            contact: customerPhone || undefined,
+          },
+          notes: {
+            app_order_id: orderId,
+            table_token: tableToken || '',
+          },
+          theme: { color: '#0f172a' },
+          modal: {
+            ondismiss: () => {
+              setIsProcessing(false);
+            },
+          },
+          handler: async (response) => {
+            try {
+              await apiPost('/api/payments/razorpay/verify', {
+                orderId,
+                customer_session_token: customerSessionToken,
+                ...response,
+              }, { auth: false });
+
+              sessionStorage.setItem('customerOrderId', orderId);
+              sessionStorage.removeItem('customerPendingOrderId');
+
+              sessionStorage.removeItem('customerCart');
+              sessionStorage.removeItem('customerTable');
+
+              setIsSuccess(true);
+              setIsProcessing(false);
+
+              setTimeout(() => {
+                navigate(`/order/${tableToken}/status`);
+              }, 500);
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
+              setSessionError(msg || 'Payment verification failed. Please try again.');
+              setIsProcessing(false);
+            }
+          },
+        };
+
+        const rzp = new window.Razorpay(options);
+        rzp.open();
+        return;
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         if (msg.includes('403') || msg.toLowerCase().includes('session') || msg.toLowerCase().includes('token')) {
           setSessionError('Your ordering session has expired. Please ask a staff member to unlock your table again.');
         } else {
-          setSessionError('Failed to place order. Please try again.');
+          setSessionError(msg || 'Payment failed. Please try again.');
         }
         setIsProcessing(false);
         return;
@@ -98,14 +197,6 @@ export default function CustomerPayment() {
     }
 
     setIsProcessing(false);
-    setIsSuccess(true);
-
-    sessionStorage.removeItem('customerCart');
-    sessionStorage.removeItem('customerTable');
-
-    setTimeout(() => {
-      navigate(`/order/${tableToken}/status`);
-    }, 2000);
   };
 
   if (!table || cart.length === 0) {
@@ -240,14 +331,9 @@ export default function CustomerPayment() {
 
         {paymentMethod === 'upi' && (
           <div className="bg-card rounded-xl p-6 shadow-card text-center">
-            <div className="w-48 h-48 mx-auto mb-4 bg-muted rounded-xl flex items-center justify-center">
-              <div className="text-center">
-                <QrCode className="h-24 w-24 text-muted-foreground mx-auto mb-2" />
-                <p className="text-xs text-muted-foreground">UPI QR Code</p>
-              </div>
-            </div>
-            <p className="text-sm text-muted-foreground mb-2">Or pay to UPI ID:</p>
-            <p className="font-mono font-semibold">{config.upi_id}</p>
+            <p className="text-sm text-muted-foreground">
+              You will be redirected to Razorpay Checkout to complete your UPI payment.
+            </p>
           </div>
         )}
 

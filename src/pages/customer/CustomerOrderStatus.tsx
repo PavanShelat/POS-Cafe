@@ -12,7 +12,7 @@ type CustomerOrderStatusResponse = {
 };
 
 const statusSteps = [
-  { id: 'payment', label: 'Payment Received', icon: CheckCircle, description: 'Your payment is successful' },
+  { id: 'payment', label: 'Payment', icon: CheckCircle, description: 'Complete payment to proceed' },
   { id: 'confirmed', label: 'Order Confirmed', icon: CheckCircle, description: 'POS has accepted your order' },
   { id: 'preparing', label: 'Preparing', icon: ChefHat, description: 'Our kitchen is preparing your order' },
   { id: 'ready', label: 'Ready', icon: Coffee, description: 'Your order is ready' },
@@ -43,12 +43,24 @@ function getOrderProgress(order: Order | null) {
     };
   }
 
+  if (order.payment_status !== 'paid') {
+    return {
+      isCancelled: false,
+      currentStepIndex: 0,
+      title: 'Waiting for Payment',
+      subtitle: 'Complete the payment to place your order',
+      icon: Clock,
+      iconClass: 'text-status-pending',
+      iconBg: 'bg-status-pending/20',
+    };
+  }
+
   if (order.status === 'pending_confirmation') {
     return {
       isCancelled: false,
       currentStepIndex: 0,
       title: 'Waiting for POS Confirmation',
-      subtitle: 'Your order is paid and awaiting confirmation',
+      subtitle: 'Payment received. Awaiting confirmation',
       icon: Clock,
       iconClass: 'text-status-pending',
       iconBg: 'bg-status-pending/20',

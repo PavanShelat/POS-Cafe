@@ -3,6 +3,8 @@ import express from "express";
 import cors from "cors";
 import { createClient } from "@supabase/supabase-js";
 import nodemailer from "nodemailer";
+import crypto from "node:crypto";
+import https from "node:https";
 import { prisma } from "./prisma.js";
 import { buildInvoicePdf } from "./pdf.js";
 import { buildInvoiceNumber, calculateOrderTotals, roundCurrency } from "./tax.js";
@@ -144,6 +146,93 @@ function mapConfig(config) {
 function isValidEmail(value) {
   if (!value || typeof value !== "string") return false;
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
+}
+
+function getRazorpayKeys() {
+  const keyId = process.env.RAZORPAY_KEY_ID;
+  const keySecret = process.env.RAZORPAY_KEY_SECRET;
+  if (!keyId || !keySecret) {
+    const err = new Error("Missing RAZORPAY_KEY_ID or RAZORPAY_KEY_SECRET");
+    err.status = 500;
+    throw err;
+  }
+  return { keyId, keySecret };
+}
+
+function toPaise(amount) {
+  const value = Number(amount || 0);
+  return Math.round(value * 100);
+}
+
+function razorpayRequestJson({ method, path, body }) {
+  const { keyId, keySecret } = getRazorpayKeys();
+  const payload = body ? JSON.stringify(body) : "";
+  const auth = Buffer.from(`${keyId}:${keySecret}`).toString("base64");
+
+  return new Promise((resolve, reject) => {
+    const req = https.request(
+      {
+        hostname: "api.razorpay.com",
+        method,
+        path,
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(payload),
+          Authorization: `Basic ${auth}`,
+        },
+      },
+      (res) => {
+        let data = "";
+        res.on("data", (chunk) => {
+          data += chunk;
+        });
+        res.on("end", () => {
+          const status = Number(res.statusCode || 0);
+          const parsed = data ? safeJsonParse(data) : null;
+          if (status >= 200 && status < 300) return resolve(parsed);
+          const message =
+            status === 401
+              ? "Razorpay authentication failed. Check RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET."
+              : parsed?.error?.description || parsed?.error?.message || `Razorpay request failed (${status})`;
+          const err = new Error(message);
+          err.status = status || 502;
+          return reject(err);
+        });
+      }
+    );
+
+    req.on("error", reject);
+    req.write(payload);
+    req.end();
+  });
+}
+
+function safeJsonParse(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+async function requireValidCustomerSessionForTableId(tableId, customerSessionToken) {
+  if (!customerSessionToken) {
+    const err = new Error("Missing customer_session_token");
+    err.status = 403;
+    throw err;
+  }
+
+  const table = await prisma.table.findUnique({ where: { id: tableId } });
+  if (!table?.customer_session_token) {
+    const err = new Error("Table ordering session is not active. Please ask a staff member to unlock your table.");
+    err.status = 403;
+    throw err;
+  }
+  if (table.customer_session_token !== customerSessionToken) {
+    const err = new Error("Invalid or expired session token.");
+    err.status = 403;
+    throw err;
+  }
 }
 
 function buildInvoiceEmailHtml({ restaurantName, customerName, invoiceNumber, totalAmount, currency }) {
@@ -1329,7 +1418,7 @@ app.post("/api/orders", async (req, res) => {
       discount,
       gstRate: Number(config?.tax_rate || 0),
     });
-    const resolvedPaymentStatus = payment_status || (source === "customer" ? "paid" : "unpaid");
+    const resolvedPaymentStatus = payment_status || "unpaid";
     const resolvedPaymentMethod = payment_method || (source === "customer" ? "upi" : "cash");
     const invoiceNumber = await createUniqueInvoiceNumber();
 
@@ -1406,6 +1495,165 @@ app.post("/api/orders", async (req, res) => {
     });
   } catch (err) {
     return sendError(res, 500, err?.message || "Server error");
+  }
+});
+
+app.post("/api/payments/razorpay/order", async (req, res) => {
+  try {
+    const { orderId, order_id, customer_session_token, payment_method } = req.body || {};
+    const id = orderId || order_id;
+    if (!id) return sendError(res, 400, "orderId is required");
+
+    const order = await prisma.order.findUnique({ where: { id } });
+    if (!order) return sendError(res, 404, "Order not found");
+    if (order.source !== "customer") return sendError(res, 403, "Only customer orders are supported");
+    if (order.status === "cancelled") return sendError(res, 400, "Order is cancelled");
+
+    await requireValidCustomerSessionForTableId(order.table_id, customer_session_token);
+
+    if (order.payment_status === "paid") {
+      return sendError(res, 400, "Order is already paid");
+    }
+
+    const method = payment_method || "digital";
+    if (!["upi", "digital"].includes(String(method))) {
+      return sendError(res, 400, "Invalid payment_method");
+    }
+
+    const amountPaise = toPaise(order.total_amount);
+    if (!amountPaise || amountPaise < 100) {
+      return sendError(res, 400, "Invalid order amount");
+    }
+
+    const razorpayOrder = await razorpayRequestJson({
+      method: "POST",
+      path: "/v1/orders",
+      body: {
+        amount: amountPaise,
+        currency: "INR",
+        receipt: order.invoice_number,
+        notes: {
+          order_id: order.id,
+          table_id: order.table_id,
+        },
+      },
+    });
+
+    await prisma.payment.create({
+      data: {
+        order_id: order.id,
+        method,
+        amount: Number(order.total_amount || 0),
+        status: "pending",
+        provider: "razorpay",
+        provider_order_id: razorpayOrder?.id || null,
+      },
+    });
+
+    const config = await prisma.pOSConfig.findFirst({ orderBy: { created_at: "desc" } });
+    const { keyId } = getRazorpayKeys();
+
+    return res.json({
+      keyId,
+      razorpayOrderId: razorpayOrder?.id,
+      amountPaise,
+      currency: "INR",
+      name: config?.restaurant_name || "POS Cafe",
+    });
+  } catch (err) {
+    const status = err?.status || 500;
+    return sendError(res, status, err?.message || "Server error");
+  }
+});
+
+app.post("/api/payments/razorpay/verify", async (req, res) => {
+  try {
+    const {
+      orderId,
+      order_id,
+      customer_session_token,
+      razorpay_order_id,
+      razorpay_payment_id,
+      razorpay_signature,
+    } = req.body || {};
+
+    const id = orderId || order_id;
+    if (!id) return sendError(res, 400, "orderId is required");
+    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+      return sendError(res, 400, "razorpay_order_id, razorpay_payment_id, and razorpay_signature are required");
+    }
+
+    const order = await prisma.order.findUnique({ where: { id } });
+    if (!order) return sendError(res, 404, "Order not found");
+    if (order.source !== "customer") return sendError(res, 403, "Only customer orders are supported");
+    if (order.status === "cancelled") return sendError(res, 400, "Order is cancelled");
+
+    await requireValidCustomerSessionForTableId(order.table_id, customer_session_token);
+
+    const payment = await prisma.payment.findFirst({
+      where: {
+        order_id: order.id,
+        provider: "razorpay",
+        provider_order_id: String(razorpay_order_id),
+      },
+      orderBy: { created_at: "desc" },
+    });
+
+    if (!payment) {
+      return sendError(res, 400, "No pending Razorpay payment found for this order");
+    }
+
+    const { keySecret } = getRazorpayKeys();
+    const expected = crypto
+      .createHmac("sha256", keySecret)
+      .update(`${razorpay_order_id}|${razorpay_payment_id}`)
+      .digest("hex");
+
+    if (expected !== String(razorpay_signature)) {
+      return sendError(res, 400, "Invalid payment signature");
+    }
+
+    const wasPaid = order.payment_status === "paid";
+
+    const [updatedOrder] = await prisma.$transaction(async (tx) => {
+      const newOrder = wasPaid
+        ? order
+        : await tx.order.update({
+          where: { id: order.id },
+          data: { payment_status: "paid" },
+        });
+
+      await tx.payment.update({
+        where: { id: payment.id },
+        data: {
+          status: "completed",
+          provider_payment_id: String(razorpay_payment_id),
+          provider_signature: String(razorpay_signature),
+        },
+      });
+
+      if (!wasPaid) {
+        await tx.session.update({
+          where: { id: order.session_id },
+          data: { total_sales: { increment: Number(order.total_amount || 0) } },
+        });
+      }
+
+      return [newOrder];
+    });
+
+    if (!wasPaid) {
+      try {
+        await sendInvoiceEmailForOrder(order.id);
+      } catch (emailErr) {
+        console.error(`Invoice email send failed for order ${order.id}:`, emailErr?.message || emailErr);
+      }
+    }
+
+    return res.json({ ok: true, order: mapOrder(updatedOrder) });
+  } catch (err) {
+    const status = err?.status || 500;
+    return sendError(res, status, err?.message || "Server error");
   }
 });
 
