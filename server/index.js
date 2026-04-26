@@ -12,7 +12,11 @@ import { buildGstReportWorkbook } from "./xlsx.js";
 
 const app = express();
 app.use(cors({ origin: process.env.CORS_ORIGIN || true, credentials: true }));
-app.use(express.json());
+app.use(express.json({
+  verify: (req, _res, buf) => {
+    req.rawBody = buf;
+  },
+}));
 
 const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -215,6 +219,19 @@ function safeJsonParse(text) {
   }
 }
 
+function getPosQrPaymentTtlMinutes() {
+  const raw = process.env.POS_QR_PAYMENT_TTL_MINUTES;
+  const value = raw ? Number(raw) : 10;
+  if (!Number.isFinite(value) || value <= 0) return 10;
+  return value;
+}
+
+function isPosOrderQrPaymentExpired(order) {
+  if (!order?.created_at) return false;
+  const ttlMs = getPosQrPaymentTtlMinutes() * 60 * 1000;
+  return Date.now() - new Date(order.created_at).getTime() > ttlMs;
+}
+
 async function requireValidCustomerSessionForTableId(tableId, customerSessionToken) {
   if (!customerSessionToken) {
     const err = new Error("Missing customer_session_token");
@@ -233,6 +250,47 @@ async function requireValidCustomerSessionForTableId(tableId, customerSessionTok
     err.status = 403;
     throw err;
   }
+}
+
+async function completePaymentForOrder({ order, payment, providerPaymentId, providerSignature }) {
+  const wasPaid = order.payment_status === "paid";
+
+  const [updatedOrder] = await prisma.$transaction(async (tx) => {
+    const newOrder = wasPaid
+      ? order
+      : await tx.order.update({
+        where: { id: order.id },
+        data: { payment_status: "paid" },
+      });
+
+    await tx.payment.update({
+      where: { id: payment.id },
+      data: {
+        status: "completed",
+        provider_payment_id: providerPaymentId ? String(providerPaymentId) : payment.provider_payment_id,
+        provider_signature: providerSignature ? String(providerSignature) : payment.provider_signature,
+      },
+    });
+
+    if (!wasPaid) {
+      await tx.session.update({
+        where: { id: order.session_id },
+        data: { total_sales: { increment: Number(order.total_amount || 0) } },
+      });
+    }
+
+    return [newOrder];
+  });
+
+  if (!wasPaid) {
+    try {
+      await sendInvoiceEmailForOrder(order.id);
+    } catch (emailErr) {
+      console.error(`Invoice email send failed for order ${order.id}:`, emailErr?.message || emailErr);
+    }
+  }
+
+  return { updatedOrder, wasPaid };
 }
 
 function buildInvoiceEmailHtml({ restaurantName, customerName, invoiceNumber, totalAmount, currency }) {
@@ -712,6 +770,38 @@ app.get("/api/auth/role", async (req, res) => {
   } catch (err) {
     const status = err?.status || 500;
     return sendError(res, status, err?.message || "Server error");
+  }
+});
+
+app.get("/api/health", (_req, res) => {
+  return res.json({
+    ok: true,
+    service: "pos-cafe-api",
+    time: new Date().toISOString(),
+  });
+});
+
+app.get("/api/public/orders/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const [order, config] = await Promise.all([
+      prisma.order.findUnique({
+        where: { id },
+        include: { items: { include: { product: true } }, table: true },
+      }),
+      prisma.pOSConfig.findFirst({ orderBy: { created_at: "desc" } }),
+    ]);
+
+    if (!order) return sendError(res, 404, "Order not found");
+
+    return res.json({
+      order: mapOrder(order),
+      table: mapTable(order.table),
+      config: mapConfig(config) || { restaurant_name: "POS Cafe", gstin: "", currency: "Rs ", tax_rate: 0 },
+    });
+  } catch (err) {
+    return sendError(res, 500, err?.message || "Server error");
   }
 });
 
@@ -1379,6 +1469,10 @@ app.post("/api/orders", async (req, res) => {
       return sendError(res, 400, "table_id, items, and source are required");
     }
 
+    if (source === "pos") {
+      await requireAuthenticatedUser(req);
+    }
+
     if (!customer_name || !String(customer_name).trim()) {
       return sendError(res, 400, "customer_name is required");
     }
@@ -1506,10 +1600,12 @@ app.post("/api/payments/razorpay/order", async (req, res) => {
 
     const order = await prisma.order.findUnique({ where: { id } });
     if (!order) return sendError(res, 404, "Order not found");
-    if (order.source !== "customer") return sendError(res, 403, "Only customer orders are supported");
+    if (!["customer", "pos"].includes(String(order.source))) return sendError(res, 403, "Unsupported order source");
     if (order.status === "cancelled") return sendError(res, 400, "Order is cancelled");
 
-    await requireValidCustomerSessionForTableId(order.table_id, customer_session_token);
+    if (order.source === "customer") {
+      await requireValidCustomerSessionForTableId(order.table_id, customer_session_token);
+    }
 
     if (order.payment_status === "paid") {
       return sendError(res, 400, "Order is already paid");
@@ -1525,6 +1621,40 @@ app.post("/api/payments/razorpay/order", async (req, res) => {
       return sendError(res, 400, "Invalid order amount");
     }
 
+    const existingPayment = await prisma.payment.findFirst({
+      where: {
+        order_id: order.id,
+        provider: "razorpay",
+        status: "pending",
+      },
+      orderBy: { created_at: "desc" },
+    });
+
+    if (existingPayment?.provider_order_id) {
+      if (String(existingPayment.method) !== String(method)) {
+        return sendError(res, 400, "A payment attempt is already in progress for a different method");
+      }
+
+      const config = await prisma.pOSConfig.findFirst({ orderBy: { created_at: "desc" } });
+      const { keyId } = getRazorpayKeys();
+
+      return res.json({
+        keyId,
+        razorpayOrderId: existingPayment.provider_order_id,
+        amountPaise,
+        currency: "INR",
+        name: config?.restaurant_name || "POS Cafe",
+      });
+    }
+
+    if (order.source === "pos" && isPosOrderQrPaymentExpired(order)) {
+      return sendError(
+        res,
+        400,
+        `Payment session expired (>${getPosQrPaymentTtlMinutes()} minutes). Please ask staff to recreate the order.`
+      );
+    }
+
     const razorpayOrder = await razorpayRequestJson({
       method: "POST",
       path: "/v1/orders",
@@ -1535,6 +1665,7 @@ app.post("/api/payments/razorpay/order", async (req, res) => {
         notes: {
           order_id: order.id,
           table_id: order.table_id,
+          source: order.source,
         },
       },
     });
@@ -1585,10 +1716,12 @@ app.post("/api/payments/razorpay/verify", async (req, res) => {
 
     const order = await prisma.order.findUnique({ where: { id } });
     if (!order) return sendError(res, 404, "Order not found");
-    if (order.source !== "customer") return sendError(res, 403, "Only customer orders are supported");
+    if (!["customer", "pos"].includes(String(order.source))) return sendError(res, 403, "Unsupported order source");
     if (order.status === "cancelled") return sendError(res, 400, "Order is cancelled");
 
-    await requireValidCustomerSessionForTableId(order.table_id, customer_session_token);
+    if (order.source === "customer") {
+      await requireValidCustomerSessionForTableId(order.table_id, customer_session_token);
+    }
 
     const payment = await prisma.payment.findFirst({
       where: {
@@ -1613,44 +1746,90 @@ app.post("/api/payments/razorpay/verify", async (req, res) => {
       return sendError(res, 400, "Invalid payment signature");
     }
 
-    const wasPaid = order.payment_status === "paid";
-
-    const [updatedOrder] = await prisma.$transaction(async (tx) => {
-      const newOrder = wasPaid
-        ? order
-        : await tx.order.update({
-          where: { id: order.id },
-          data: { payment_status: "paid" },
-        });
-
-      await tx.payment.update({
-        where: { id: payment.id },
-        data: {
-          status: "completed",
-          provider_payment_id: String(razorpay_payment_id),
-          provider_signature: String(razorpay_signature),
-        },
-      });
-
-      if (!wasPaid) {
-        await tx.session.update({
-          where: { id: order.session_id },
-          data: { total_sales: { increment: Number(order.total_amount || 0) } },
-        });
-      }
-
-      return [newOrder];
+    const { updatedOrder } = await completePaymentForOrder({
+      order,
+      payment,
+      providerPaymentId: razorpay_payment_id,
+      providerSignature: razorpay_signature,
     });
 
-    if (!wasPaid) {
-      try {
-        await sendInvoiceEmailForOrder(order.id);
-      } catch (emailErr) {
-        console.error(`Invoice email send failed for order ${order.id}:`, emailErr?.message || emailErr);
-      }
+    return res.json({ ok: true, order: mapOrder(updatedOrder) });
+  } catch (err) {
+    const status = err?.status || 500;
+    return sendError(res, status, err?.message || "Server error");
+  }
+});
+
+app.post("/api/webhooks/razorpay", async (req, res) => {
+  try {
+    const signatureHeader = req.headers["x-razorpay-signature"];
+    const signature = Array.isArray(signatureHeader) ? signatureHeader[0] : signatureHeader;
+    const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
+
+    if (!secret) {
+      return sendError(res, 500, "Missing RAZORPAY_WEBHOOK_SECRET");
+    }
+    if (!signature) {
+      return sendError(res, 400, "Missing x-razorpay-signature header");
     }
 
-    return res.json({ ok: true, order: mapOrder(updatedOrder) });
+    const rawBody = req.rawBody || Buffer.from(JSON.stringify(req.body || {}));
+    const expected = crypto.createHmac("sha256", secret).update(rawBody).digest("hex");
+    if (expected !== String(signature)) {
+      return sendError(res, 400, "Invalid webhook signature");
+    }
+
+    const payload = req.body || {};
+    const event = payload?.event ? String(payload.event) : "";
+    const paymentEntity = payload?.payload?.payment?.entity;
+    const orderEntity = payload?.payload?.order?.entity;
+
+    const providerOrderId = paymentEntity?.order_id || orderEntity?.id || null;
+    const providerPaymentId = paymentEntity?.id || null;
+    const providerPaymentStatus = paymentEntity?.status ? String(paymentEntity.status).toLowerCase() : "";
+
+    const isSuccessfulPayment =
+      event === "payment.captured" ||
+      event === "order.paid" ||
+      providerPaymentStatus === "captured";
+
+    if (!providerOrderId) {
+      return res.json({ ok: true, ignored: true });
+    }
+
+    if (!isSuccessfulPayment) {
+      return res.json({ ok: true, ignored: true });
+    }
+
+    const payment = await prisma.payment.findFirst({
+      where: {
+        provider: "razorpay",
+        provider_order_id: String(providerOrderId),
+      },
+      orderBy: { created_at: "desc" },
+    });
+
+    if (!payment) {
+      return res.json({ ok: true, ignored: true });
+    }
+
+    if (payment.status === "completed") {
+      return res.json({ ok: true });
+    }
+
+    const order = await prisma.order.findUnique({ where: { id: payment.order_id } });
+    if (!order || order.status === "cancelled") {
+      return res.json({ ok: true, ignored: true });
+    }
+
+    await completePaymentForOrder({
+      order,
+      payment,
+      providerPaymentId,
+      providerSignature: null,
+    });
+
+    return res.json({ ok: true });
   } catch (err) {
     const status = err?.status || 500;
     return sendError(res, status, err?.message || "Server error");
@@ -1814,7 +1993,7 @@ app.post("/api/sessions/close", async (req, res) => {
   }
 });
 
-const port = Number(process.env.SERVER_PORT || 8787);
+const port = Number(process.env.PORT || process.env.SERVER_PORT || 8787);
 app.listen(port, () => {
   console.log(`API server listening on http://localhost:${port}`);
 });
