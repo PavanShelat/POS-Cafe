@@ -1950,6 +1950,7 @@ app.patch("/api/orders/:id/kitchen-status", async (req, res) => {
         where: {
           table_id: order.table_id,
           status: "confirmed",
+          payment_status: "paid",
           kitchen_status: { not: "completed" },
         },
       });
