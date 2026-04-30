@@ -64,6 +64,40 @@ This project is built with:
 
 Simply open [Lovable](https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID) and click on Share -> Publish.
 
+## Deploy (Render backend + Vercel frontend)
+
+### Backend (Render)
+
+- Create a new **Web Service** from this repo.
+- **Build Command:** `npm ci && npm run prisma:generate`
+- **Start Command:** `node server/index.js`
+- **Environment variables (required):**
+  - `DATABASE_URL`
+  - `SUPABASE_URL`
+  - `SUPABASE_SERVICE_ROLE_KEY`
+- **Environment variables (optional / feature-based):**
+  - `SUPABASE_JWT_SECRET` (not currently used by the server)
+  - `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET`
+  - `CORS_ORIGIN` (set to your Vercel domain; if omitted the API allows all origins)
+  - `POS_QR_PAYMENT_TTL_MINUTES`
+  - `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM_EMAIL`, `SMTP_FROM_NAME`
+
+Render will provide `PORT` automatically (the server reads `PORT` first).
+
+### Frontend (Vercel)
+
+- Import the repo into Vercel as a frontend project.
+- **Build Command:** `npm run build`
+- **Output Directory:** `dist`
+- **Environment variables (required):**
+  - `VITE_SUPABASE_URL`
+  - `VITE_SUPABASE_PUBLISHABLE_KEY`
+  - `VITE_API_BASE_URL` (your Render service URL, e.g. `https://<service>.onrender.com`)
+
+### Razorpay Webhook URL
+
+Set Razorpay webhook to: `https://<render-service>/api/webhooks/razorpay`
+
 ## Can I connect a custom domain to my Lovable project?
 
 Yes, you can!

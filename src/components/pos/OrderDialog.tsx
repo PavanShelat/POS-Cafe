@@ -8,9 +8,10 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
-import { Plus, Minus, ShoppingCart, Send, CreditCard, QrCode, Wallet } from 'lucide-react';
+import { CreditCard, Minus, Plus, QrCode, Send, ShoppingCart, Wallet } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { calculateTaxSummary } from '@/lib/tax';
+import { PosOrderPaymentQrDialog } from '@/components/pos/PosOrderPaymentQrDialog';
 
 interface OrderDialogProps {
   table: TableType;
@@ -28,7 +29,8 @@ export function OrderDialog({ table, open, onOpenChange }: OrderDialogProps) {
     clearCart,
     cartTotal,
     createOrder,
-    config
+    config,
+    orders,
   } = usePOS();
 
   const [selectedCategory, setSelectedCategory] = useState<string>('');
@@ -37,6 +39,8 @@ export function OrderDialog({ table, open, onOpenChange }: OrderDialogProps) {
   const [customerEmail, setCustomerEmail] = useState('');
   const [customerPhone, setCustomerPhone] = useState('');
   const [discount, setDiscount] = useState('0');
+  const [qrDialogOpen, setQrDialogOpen] = useState(false);
+  const [qrOrderId, setQrOrderId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!selectedCategory && categories.length > 0) {
@@ -60,16 +64,50 @@ export function OrderDialog({ table, open, onOpenChange }: OrderDialogProps) {
 
   const handleSubmitOrder = async () => {
     if (cart.length > 0 && isCustomerNameValid && isCustomerEmailValid) {
-      await createOrder(table.id, cart, 'pos', {
+      if (paymentMethod === 'cash') {
+        await createOrder(table.id, cart, 'pos', {
+          customerName: customerName.trim(),
+          customerEmail: customerEmail.trim(),
+          customerPhone: customerPhone.trim() || undefined,
+          discount: Number(discount || 0),
+          paymentStatus: 'paid',
+          paymentMethod,
+        });
+        clearCart();
+        onOpenChange(false);
+        return;
+      }
+
+      const created = await createOrder(table.id, cart, 'pos', {
         customerName: customerName.trim(),
         customerEmail: customerEmail.trim(),
         customerPhone: customerPhone.trim() || undefined,
         discount: Number(discount || 0),
-        paymentStatus: 'paid',
+        paymentStatus: 'unpaid',
         paymentMethod,
       });
+
+      if (!created) return;
+
       clearCart();
       onOpenChange(false);
+      setQrOrderId(created.id);
+      setQrDialogOpen(true);
+      sessionStorage.setItem('posQrOrderId', created.id);
+      sessionStorage.setItem('posQrOpen', '1');
+    }
+  };
+
+  const qrOrder = qrOrderId ? orders.find((o) => o.id === qrOrderId) : null;
+  const payUrl = qrOrderId ? `${window.location.origin}/pay?order_id=${encodeURIComponent(qrOrderId)}` : '';
+  const trackUrl = qrOrderId ? `${window.location.origin}/track-order?order_id=${encodeURIComponent(qrOrderId)}` : '';
+
+  const copyPayUrl = async () => {
+    if (!payUrl) return;
+    try {
+      await navigator.clipboard.writeText(payUrl);
+    } catch {
+      window.prompt('Copy this link:', payUrl);
     }
   };
 
@@ -79,6 +117,7 @@ export function OrderDialog({ table, open, onOpenChange }: OrderDialogProps) {
   };
 
   return (
+    <>
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="w-[95vw] max-w-6xl h-[90vh] flex flex-col p-0">
         <DialogHeader className="px-6 py-4 border-b">
@@ -311,12 +350,30 @@ export function OrderDialog({ table, open, onOpenChange }: OrderDialogProps) {
                 onClick={handleSubmitOrder}
               >
                 <Send className="h-4 w-4 mr-2" />
-                Pay & Send to Kitchen
+                {paymentMethod === 'cash' ? 'Pay & Send to Kitchen' : 'Generate Payment QR'}
               </Button>
             </div>
           </div>
         </div>
       </DialogContent>
     </Dialog>
+
+    <PosOrderPaymentQrDialog
+      open={qrDialogOpen}
+      onOpenChange={(next) => {
+        setQrDialogOpen(next);
+        if (!next) {
+          setQrOrderId(null);
+          sessionStorage.removeItem('posQrOpen');
+          sessionStorage.removeItem('posQrOrderId');
+        }
+      }}
+      tableNumber={table.table_number}
+      order={qrOrder ? { invoice_number: qrOrder.invoice_number, total_amount: qrOrder.total_amount, payment_status: qrOrder.payment_status } : null}
+      payUrl={payUrl}
+      trackUrl={trackUrl}
+      onCopy={() => void copyPayUrl()}
+    />
+    </>
   );
 }

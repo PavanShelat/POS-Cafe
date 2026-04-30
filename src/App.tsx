@@ -20,6 +20,8 @@ import StaffManagementPage from "./pages/StaffManagementPage";
 import CustomerMenu from "./pages/customer/CustomerMenu";
 import CustomerPayment from "./pages/customer/CustomerPayment";
 import CustomerOrderStatus from "./pages/customer/CustomerOrderStatus";
+import PublicOrderPayment from "./pages/PublicOrderPayment";
+import PublicOrderTracking from "./pages/PublicOrderTracking";
 
 import NotFound from "./pages/NotFound";
 
@@ -73,6 +75,8 @@ const App = () => (
               <Route path="/order/:tableToken" element={<CustomerMenu />} />
               <Route path="/order/:tableToken/payment" element={<CustomerPayment />} />
               <Route path="/order/:tableToken/status" element={<CustomerOrderStatus />} />
+              <Route path="/pay" element={<PublicOrderPayment />} />
+              <Route path="/track-order" element={<PublicOrderTracking />} />
 
               {/* Catch-all */}
               <Route path="*" element={<NotFound />} />

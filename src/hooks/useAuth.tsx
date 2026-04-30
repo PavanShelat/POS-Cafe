@@ -1,6 +1,7 @@
 import { useState, useEffect, createContext, useContext, ReactNode } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import type { User, Session } from '@supabase/supabase-js';
+import { apiGet } from '@/lib/api';
 
 type AppRole = 'admin' | 'cashier' | 'kitchen' | null;
 
@@ -21,30 +22,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [role, setRole] = useState<AppRole>(null);
   const [loading, setLoading] = useState(true);
 
-  const fetchRole = async (userId: string) => {
-    const { data: sessionData } = await supabase.auth.getSession();
-    const token = sessionData.session?.access_token;
-
-    if (!token) {
+  const fetchRole = async () => {
+    try {
+      const data = await apiGet<{ role: AppRole }>('/api/auth/role');
+      const resolvedRole = (data?.role as AppRole) || null;
+      setRole(resolvedRole);
+      return resolvedRole;
+    } catch {
       setRole(null);
       return null;
     }
-
-    const response = await fetch('/api/auth/role', {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    });
-
-    if (!response.ok) {
-      setRole(null);
-      return null;
-    }
-
-    const data = await response.json();
-    const resolvedRole = (data?.role as AppRole) || null;
-    setRole(resolvedRole);
-    return resolvedRole;
   };
 
   const syncAuthState = async (nextSession: Session | null) => {
@@ -57,7 +44,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    await fetchRole(nextSession.user.id);
+    await fetchRole();
     setLoading(false);
   };
 

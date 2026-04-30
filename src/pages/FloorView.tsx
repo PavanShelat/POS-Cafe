@@ -14,12 +14,28 @@ export default function FloorView() {
   const { tables, orders, floors } = usePOS();
   const [selectedFloor, setSelectedFloor] = useState('');
   const [orderDialogTable, setOrderDialogTable] = useState<TableType | null>(null);
+  const [isOrderDialogOpen, setIsOrderDialogOpen] = useState(false);
+
+  useEffect(() => {
+    const stored = sessionStorage.getItem('posSelectedFloor');
+    if (stored) {
+      setSelectedFloor(stored);
+    }
+  }, []);
 
   useEffect(() => {
     if (!selectedFloor && floors.length > 0) {
-      setSelectedFloor(floors[0].id);
+      const stored = sessionStorage.getItem('posSelectedFloor');
+      const resolved = stored && floors.some((f) => f.id === stored) ? stored : floors[0].id;
+      setSelectedFloor(resolved);
     }
   }, [floors, selectedFloor]);
+
+  useEffect(() => {
+    if (selectedFloor) {
+      sessionStorage.setItem('posSelectedFloor', selectedFloor);
+    }
+  }, [selectedFloor]);
 
   const filteredTables = tables.filter(t => t.floor_id === selectedFloor && t.active);
   const pendingOrders = orders.filter(o => o.status === 'pending_confirmation');
@@ -30,6 +46,7 @@ export default function FloorView() {
       return;
     }
     setOrderDialogTable(table);
+    setIsOrderDialogOpen(true);
   };
 
   const getTableOrderCount = (tableId: string) => {
@@ -101,8 +118,8 @@ export default function FloorView() {
       {orderDialogTable && (
         <OrderDialog
           table={orderDialogTable}
-          open={!!orderDialogTable}
-          onOpenChange={(open) => !open && setOrderDialogTable(null)}
+          open={isOrderDialogOpen}
+          onOpenChange={(open) => setIsOrderDialogOpen(open)}
         />
       )}
     </POSLayout>

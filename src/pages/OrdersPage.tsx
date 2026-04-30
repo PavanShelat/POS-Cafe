@@ -132,8 +132,8 @@ export default function OrdersPage() {
               {order.kitchen_status === 'to_cook' ? 'To Cook' : order.kitchen_status === 'preparing' ? 'Preparing' : 'Completed'}
             </Badge>
           )}
-          <Badge variant={order.payment_status === 'paid' ? 'outline' : 'destructive'}>
-            {order.payment_status === 'paid' ? 'Paid' : 'Unpaid'}
+          <Badge className={cn(order.payment_status === 'paid' ? 'bg-status-completed' : 'bg-status-pending')}>
+            {order.payment_status === 'paid' ? 'Paid' : 'Waiting Payment'}
           </Badge>
         </div>
       </button>

@@ -199,13 +199,16 @@ export default function CustomerOrderStatus() {
               {statusSteps.map((step, index) => {
                 const isCompleted = index < progress.currentStepIndex;
                 const isCurrent = index === progress.currentStepIndex;
+                const isCurrentSuccess = isCurrent && (step.id === 'confirmed' || step.id === 'ready');
+                const isCurrentPending = isCurrent && (step.id === 'payment' || step.id === 'preparing');
 
                 return (
                   <div key={step.id} className="flex items-start gap-4">
                     <div className={cn(
                       'flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center',
                       isCompleted && 'bg-status-completed text-white',
-                      isCurrent && 'bg-status-preparing text-white',
+                      isCurrentSuccess && 'bg-status-completed text-white',
+                      isCurrentPending && 'bg-status-pending text-white',
                       !isCompleted && !isCurrent && 'bg-muted text-muted-foreground'
                     )}>
                       <step.icon className="h-5 w-5" />
@@ -222,8 +225,11 @@ export default function CustomerOrderStatus() {
                     {isCompleted && (
                       <CheckCircle className="h-5 w-5 text-status-completed shrink-0" />
                     )}
-                    {isCurrent && (
-                      <Clock className="h-5 w-5 text-status-preparing shrink-0" />
+                    {isCurrentSuccess && (
+                      <CheckCircle className="h-5 w-5 text-status-completed shrink-0" />
+                    )}
+                    {isCurrentPending && (
+                      <Clock className="h-5 w-5 text-status-pending shrink-0" />
                     )}
                   </div>
                 );
