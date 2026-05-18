@@ -46,6 +46,7 @@ interface POSContextType {
   deleteOrder: (orderId: string) => Promise<void>;
   openCustomerSession: (tableId: string) => Promise<void>;
   closeCustomerSession: (tableId: string) => Promise<void>;
+  releaseTable: (tableId: string) => Promise<void>;
 
   // Products
   allProducts: Product[];
@@ -270,6 +271,15 @@ export function POSProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  const releaseTable = async (tableId: string) => {
+    try {
+      const data = await apiPost<{ table: Table }>(`/api/tables/${tableId}/release`, {});
+      setTables(prev => prev.map(t => t.id === tableId ? data.table : t));
+    } catch (err) {
+      console.error('Failed to release table', err);
+    }
+  };
+
   const updateKitchenStatus = async (orderId: string, status: KitchenStatus) => {
     try {
       const data = await apiPatch<{ order: Order; table: Table }>(`/api/orders/${orderId}/kitchen-status`, { status });
@@ -466,6 +476,7 @@ export function POSProvider({ children }: { children: ReactNode }) {
         deleteOrder,
         openCustomerSession,
         closeCustomerSession,
+        releaseTable,
         allProducts,
         categories,
         createProduct,

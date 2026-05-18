@@ -232,13 +232,6 @@ function isPosOrderQrPaymentExpired(order) {
   return Date.now() - new Date(order.created_at).getTime() > ttlMs;
 }
 
-function getTableAutoReleaseHours() {
-  const raw = process.env.TABLE_AUTO_RELEASE_HOURS;
-  const value = raw ? Number(raw) : 24;
-  if (!Number.isFinite(value) || value <= 0) return 24;
-  return value;
-}
-
 async function requireValidCustomerSessionForTableId(tableId, customerSessionToken) {
   if (!customerSessionToken) {
     const err = new Error("Missing customer_session_token");
@@ -1224,6 +1217,7 @@ app.delete("/api/tables/:id", async (req, res) => {
 
 app.patch("/api/tables/:id/status", async (req, res) => {
   try {
+    await requireAuthenticatedUser(req);
     const { id } = req.params;
     const { status } = req.body || {};
     if (!status) {
@@ -1232,6 +1226,20 @@ app.patch("/api/tables/:id/status", async (req, res) => {
     const table = await prisma.table.update({
       where: { id },
       data: { status },
+    });
+    return res.json({ table: mapTable(table) });
+  } catch (err) {
+    return sendError(res, 500, err?.message || "Server error");
+  }
+});
+
+app.post("/api/tables/:id/release", async (req, res) => {
+  try {
+    await requireAuthenticatedUser(req);
+    const { id } = req.params;
+    const table = await prisma.table.update({
+      where: { id },
+      data: { status: "available", customer_session_token: null },
     });
     return res.json({ table: mapTable(table) });
   } catch (err) {
@@ -1284,6 +1292,30 @@ app.get("/api/customer/validate-session", async (req, res) => {
       return res.json({ valid: false, reason: "Table is locked for ordering" });
     }
     return res.json({ valid: true, table: mapTable(table), customer_session_token: table.customer_session_token });
+  } catch (err) {
+    return sendError(res, 500, err?.message || "Server error");
+  }
+});
+
+app.post("/api/customer/release-table", async (req, res) => {
+  try {
+    const { tableToken, table_token, customer_session_token } = req.body || {};
+    const qrToken = tableToken || table_token;
+    if (!qrToken) return sendError(res, 400, "tableToken is required");
+
+    const table = await prisma.table.findFirst({ where: { qr_token: String(qrToken), active: true } });
+    if (!table) return sendError(res, 404, "Table not found");
+
+    if (!customer_session_token || table.customer_session_token !== String(customer_session_token)) {
+      return sendError(res, 403, "Invalid or expired session token.");
+    }
+
+    const updated = await prisma.table.update({
+      where: { id: table.id },
+      data: { status: "available", customer_session_token: null },
+    });
+
+    return res.json({ ok: true, table: mapTable(updated) });
   } catch (err) {
     return sendError(res, 500, err?.message || "Server error");
   }
@@ -1953,23 +1985,9 @@ app.patch("/api/orders/:id/kitchen-status", async (req, res) => {
     let table = await prisma.table.findUnique({ where: { id: order.table_id } });
 
     if (status === "completed") {
-      const windowStart = new Date(Date.now() - getTableAutoReleaseHours() * 60 * 60 * 1000);
-      const remaining = await prisma.order.count({
-        where: {
-          table_id: order.table_id,
-          status: "confirmed",
-          payment_status: "paid",
-          kitchen_status: { not: "completed" },
-          created_at: { gte: windowStart },
-        },
-      });
-
-      if (remaining === 0) {
-        table = await prisma.table.update({
-          where: { id: order.table_id },
-          data: { status: "available" },
-        });
-      }
+      // Table release is handled explicitly by customer/staff actions.
+      // Keeping this endpoint idempotent and not auto-flipping table status avoids
+      // releasing a table while guests are still seated.
     }
 
     return res.json({ order: mapOrder(order), table: mapTable(table) });

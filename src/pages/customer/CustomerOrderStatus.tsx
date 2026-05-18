@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Order, Table } from '@/types/pos';
 import { usePOS } from '@/context/POSContext';
-import { apiGet } from '@/lib/api';
+import { apiGet, apiPost } from '@/lib/api';
 import { Coffee, Clock, ChefHat, CheckCircle, XCircle, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -110,8 +110,10 @@ export default function CustomerOrderStatus() {
   const [order, setOrder] = useState<Order | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [isReleasing, setIsReleasing] = useState(false);
 
   const orderId = sessionStorage.getItem('customerOrderId');
+  const customerSessionToken = sessionStorage.getItem('customerSessionToken');
 
   useEffect(() => {
     if (!tableToken) {
@@ -151,6 +153,13 @@ export default function CustomerOrderStatus() {
 
   const progress = useMemo(() => getOrderProgress(order), [order]);
   const TitleIcon = progress.icon;
+  const canReleaseTable =
+    Boolean(tableToken) &&
+    Boolean(customerSessionToken) &&
+    order?.payment_status === 'paid' &&
+    order?.status === 'confirmed' &&
+    order?.kitchen_status === 'completed' &&
+    table?.status === 'occupied';
 
   if (loading) {
     return (
@@ -243,6 +252,35 @@ export default function CustomerOrderStatus() {
         <p className="text-sm text-muted-foreground">
           {order ? `Order #${order.id.slice(0, 8).toUpperCase()}` : 'No active order'}
         </p>
+
+        {canReleaseTable && (
+          <button
+            disabled={isReleasing}
+            onClick={async () => {
+              try {
+                setIsReleasing(true);
+                await apiPost('/api/customer/release-table', {
+                  tableToken,
+                  customer_session_token: customerSessionToken,
+                }, { auth: false });
+                navigate(`/order/${tableToken}`);
+              } catch (err) {
+                setError(err instanceof Error ? err.message : 'Failed to release table');
+              } finally {
+                setIsReleasing(false);
+              }
+            }}
+            className={cn(
+              'w-full py-3 px-6 rounded-xl border-2 font-semibold transition-colors',
+              isReleasing
+                ? 'border-muted text-muted-foreground bg-muted/30 cursor-not-allowed'
+                : 'border-status-available text-status-available hover:bg-status-available/10'
+            )}
+          >
+            {isReleasing ? 'Releasing table…' : 'Done Dining (Free Table)'}
+          </button>
+        )}
+
         {/* Allow the customer to place another round of items */}
         <button
           onClick={() => navigate(`/order/${tableToken}`)}
