@@ -86,6 +86,19 @@ function mapTable(table) {
   };
 }
 
+function mapTableSession(session) {
+  if (!session) return null;
+  return {
+    id: session.id,
+    table_id: session.table_id,
+    opened_at: toIso(session.opened_at),
+    delivered_at: session.delivered_at ? toIso(session.delivered_at) : null,
+    closed_at: session.closed_at ? toIso(session.closed_at) : null,
+    closed_by: session.closed_by ?? null,
+    closed_by_user_id: session.closed_by_user_id ?? null,
+  };
+}
+
 function mapSession(session) {
   if (!session) return null;
   return {
@@ -226,10 +239,88 @@ function getPosQrPaymentTtlMinutes() {
   return value;
 }
 
+function getTableSessionStaleHighlightMinutes() {
+  const raw = process.env.TABLE_SESSION_STALE_HIGHLIGHT_MINUTES;
+  const value = raw ? Number(raw) : 30;
+  if (!Number.isFinite(value) || value <= 0) return 30;
+  return value;
+}
+
+function getTableSessionAutoCloseMinutes() {
+  const raw = process.env.TABLE_SESSION_AUTO_CLOSE_MINUTES;
+  const value = raw ? Number(raw) : 90;
+  if (!Number.isFinite(value) || value <= 0) return 90;
+  return value;
+}
+
+function getTableSessionSweepIntervalMinutes() {
+  const raw = process.env.TABLE_SESSION_SWEEP_INTERVAL_MINUTES;
+  const value = raw ? Number(raw) : 15;
+  if (!Number.isFinite(value) || value <= 0) return 15;
+  return value;
+}
+
 function isPosOrderQrPaymentExpired(order) {
   if (!order?.created_at) return false;
   const ttlMs = getPosQrPaymentTtlMinutes() * 60 * 1000;
   return Date.now() - new Date(order.created_at).getTime() > ttlMs;
+}
+
+async function getOpenTableSessionForTableId(tableId, tx = prisma) {
+  return tx.tableSession.findFirst({
+    where: { table_id: tableId, closed_at: null },
+    orderBy: { opened_at: "desc" },
+  });
+}
+
+async function ensureOpenTableSessionForTableId(tableId, tx = prisma) {
+  const existing = await getOpenTableSessionForTableId(tableId, tx);
+  if (existing) return existing;
+  return tx.tableSession.create({
+    data: {
+      table_id: tableId,
+      opened_at: new Date(),
+    },
+  });
+}
+
+async function markTableSessionDeliveredForTableId(tableId, tx = prisma) {
+  const session = await getOpenTableSessionForTableId(tableId, tx);
+  if (!session) return null;
+  if (session.delivered_at) return session;
+  return tx.tableSession.update({
+    where: { id: session.id },
+    data: { delivered_at: new Date() },
+  });
+}
+
+async function closeTableSessionById({ tableSessionId, closedBy, closedByUserId = null }) {
+  const now = new Date();
+  const session = await prisma.tableSession.findUnique({ where: { id: tableSessionId } });
+  if (!session) {
+    const err = new Error("Table session not found");
+    err.status = 404;
+    throw err;
+  }
+  if (session.closed_at) return session;
+
+  return prisma.$transaction(async (tx) => {
+    const updated = await tx.tableSession.update({
+      where: { id: tableSessionId },
+      data: {
+        closed_at: now,
+        closed_by: closedBy,
+        closed_by_user_id: closedByUserId,
+      },
+    });
+
+    await tx.table.update({
+      where: { id: session.table_id },
+      data: { status: "available" },
+    });
+
+    return updated;
+  });
 }
 
 async function requireValidCustomerSessionForTableId(tableId, customerSessionToken) {
@@ -1266,6 +1357,8 @@ app.post("/api/tables/:id/close-customer-session", async (req, res) => {
 app.get("/api/customer/validate-session", async (req, res) => {
   try {
     const qrToken = typeof req.query.qr_token === "string" ? req.query.qr_token : null;
+    const customerSessionToken =
+      typeof req.query.customer_session_token === "string" ? req.query.customer_session_token : null;
     if (!qrToken) return sendError(res, 400, "qr_token is required");
 
     const table = await prisma.table.findFirst({
@@ -1275,6 +1368,13 @@ app.get("/api/customer/validate-session", async (req, res) => {
 
     if (!table.customer_session_token) {
       return res.json({ valid: false, reason: "Table is locked for ordering" });
+    }
+
+    // If a table is already occupied/pending, only allow access for the same session token holder.
+    if (["occupied", "pending_confirmation"].includes(String(table.status))) {
+      if (!customerSessionToken || customerSessionToken !== table.customer_session_token) {
+        return res.json({ valid: false, reason: "Table already has an active session" });
+      }
     }
     return res.json({ valid: true, table: mapTable(table), customer_session_token: table.customer_session_token });
   } catch (err) {
@@ -1374,12 +1474,189 @@ app.get("/api/customer/order-status/:tableToken", async (req, res) => {
       });
     }
 
+    let openTableSession = await getOpenTableSessionForTableId(table.id);
+    if (!openTableSession && ["occupied", "pending_confirmation"].includes(String(table.status))) {
+      openTableSession = await ensureOpenTableSessionForTableId(table.id);
+    }
+
+    const confirmedPaidCount = await prisma.order.count({
+      where: {
+        table_id: table.id,
+        status: "confirmed",
+        payment_status: "paid",
+      },
+    });
+
+    const remainingNotCompleted = await prisma.order.count({
+      where: {
+        table_id: table.id,
+        status: "confirmed",
+        payment_status: "paid",
+        kitchen_status: { not: "completed" },
+      },
+    });
+
+    const isDeliveredForTable = confirmedPaidCount > 0 && remainingNotCompleted === 0;
+    const deliveredSession =
+      openTableSession && isDeliveredForTable && !openTableSession.delivered_at
+        ? await markTableSessionDeliveredForTableId(table.id)
+        : openTableSession;
+
     return res.json({
       table: mapTable(table),
       order: order ? mapOrder(order) : null,
+      table_session: mapTableSession(deliveredSession),
+      can_close_table_session: Boolean(deliveredSession?.delivered_at),
     });
   } catch (err) {
     return sendError(res, 500, err?.message || "Server error");
+  }
+});
+
+app.post("/api/customer/close-table-session", async (req, res) => {
+  try {
+    const { tableToken, qr_token, customer_session_token } = req.body || {};
+    const resolvedToken = typeof tableToken === "string" ? tableToken : typeof qr_token === "string" ? qr_token : null;
+    if (!resolvedToken) return sendError(res, 400, "tableToken is required");
+
+    const table = await prisma.table.findFirst({
+      where: { qr_token: resolvedToken, active: true },
+    });
+    if (!table) return sendError(res, 404, "Table not found");
+
+    await requireValidCustomerSessionForTableId(table.id, customer_session_token);
+
+    const openTableSession = await getOpenTableSessionForTableId(table.id);
+    if (!openTableSession) {
+      return sendError(res, 400, "No active table session found for this table.");
+    }
+    if (!openTableSession.delivered_at) {
+      return sendError(res, 400, "Your order is not completed yet. Please close the session after delivery.");
+    }
+
+    const updatedSession = await closeTableSessionById({
+      tableSessionId: openTableSession.id,
+      closedBy: "customer",
+      closedByUserId: null,
+    });
+
+    const updatedTable = await prisma.table.findUnique({ where: { id: table.id } });
+
+    return res.json({
+      ok: true,
+      table: mapTable(updatedTable),
+      table_session: mapTableSession(updatedSession),
+    });
+  } catch (err) {
+    const status = err?.status || 500;
+    return sendError(res, status, err?.message || "Server error");
+  }
+});
+
+app.get("/api/table-sessions/open", async (req, res) => {
+  try {
+    await requireAuthenticatedUser(req);
+
+    let sessions = await prisma.tableSession.findMany({
+      where: { closed_at: null },
+      include: { table: true },
+      orderBy: { opened_at: "desc" },
+      take: 250,
+    });
+
+    const sessionTableIds = new Set(sessions.map((s) => s.table_id));
+    const occupiedTables = await prisma.table.findMany({
+      where: {
+        status: { in: ["occupied", "pending_confirmation"] },
+        active: true,
+      },
+      orderBy: { table_number: "asc" },
+      take: 250,
+    });
+
+    const missingTables = occupiedTables.filter((t) => !sessionTableIds.has(t.id));
+    if (missingTables.length > 0) {
+      for (const table of missingTables) {
+        try {
+          await ensureOpenTableSessionForTableId(table.id);
+        } catch (err) {
+          console.error(`Failed to backfill table session for table ${table.id}:`, err?.message || err);
+        }
+      }
+
+      sessions = await prisma.tableSession.findMany({
+        where: { closed_at: null },
+        include: { table: true },
+        orderBy: { opened_at: "desc" },
+        take: 250,
+      });
+    }
+
+    const tableIds = sessions.map((s) => s.table_id);
+
+    const latestOrders = tableIds.length
+      ? await prisma.order.findMany({
+        where: { table_id: { in: tableIds } },
+        orderBy: { created_at: "desc" },
+        take: 500,
+      })
+      : [];
+
+    const latestByTableId = new Map();
+    for (const order of latestOrders) {
+      if (!latestByTableId.has(order.table_id)) {
+        latestByTableId.set(order.table_id, order);
+      }
+    }
+
+    const now = Date.now();
+    const staleMs = getTableSessionStaleHighlightMinutes() * 60 * 1000;
+
+    return res.json({
+      sessions: sessions.map((s) => {
+        const order = latestByTableId.get(s.table_id) || null;
+        const deliveredAtMs = s.delivered_at ? new Date(s.delivered_at).getTime() : null;
+        const isStale = Boolean(deliveredAtMs && now - deliveredAtMs > staleMs);
+
+        return {
+          table_session: mapTableSession(s),
+          table: mapTable(s.table),
+          latest_order: order ? mapOrder(order) : null,
+          is_stale: isStale,
+        };
+      }),
+      thresholds: {
+        stale_highlight_minutes: getTableSessionStaleHighlightMinutes(),
+        auto_close_minutes: getTableSessionAutoCloseMinutes(),
+      },
+    });
+  } catch (err) {
+    const status = err?.status || 500;
+    return sendError(res, status, err?.message || "Server error");
+  }
+});
+
+app.post("/api/table-sessions/:id/close", async (req, res) => {
+  try {
+    const user = await requireAuthenticatedUser(req);
+    const { id } = req.params;
+
+    const updatedSession = await closeTableSessionById({
+      tableSessionId: id,
+      closedBy: "cashier",
+      closedByUserId: user.id,
+    });
+
+    const updatedTable = await prisma.table.findUnique({ where: { id: updatedSession.table_id } });
+
+    return res.json({
+      ok: true,
+      table_session: mapTableSession(updatedSession),
+      table: mapTable(updatedTable),
+    });
+  } catch (err) {
+    const status = err?.status || 500;
+    return sendError(res, status, err?.message || "Server error");
   }
 });
 
@@ -1561,6 +1838,10 @@ app.post("/api/orders", async (req, res) => {
       where: { id: table_id },
       data: { status: source === "customer" ? "pending_confirmation" : "occupied" },
     });
+
+    if (table.status === "occupied") {
+      await ensureOpenTableSessionForTableId(table.id);
+    }
 
     const sessionData = {
       orders_count: { increment: 1 },
@@ -1877,6 +2158,7 @@ app.get("/api/orders/:id/invoice", async (req, res) => {
 
 app.patch("/api/orders/:id/confirm", async (req, res) => {
   try {
+    await requireAuthenticatedUser(req);
     const { id } = req.params;
     const order = await prisma.order.update({
       where: { id },
@@ -1889,14 +2171,18 @@ app.patch("/api/orders/:id/confirm", async (req, res) => {
       data: { status: "occupied" },
     });
 
+    await ensureOpenTableSessionForTableId(table.id);
+
     return res.json({ order: mapOrder(order), table: mapTable(table) });
   } catch (err) {
-    return sendError(res, 500, err?.message || "Server error");
+    const status = err?.status || 500;
+    return sendError(res, status, err?.message || "Server error");
   }
 });
 
 app.patch("/api/orders/:id/reject", async (req, res) => {
   try {
+    const user = await requireAuthenticatedUser(req);
     const { id } = req.params;
     const existingOrder = await prisma.order.findUnique({ where: { id } });
     if (!existingOrder) {
@@ -1914,6 +2200,15 @@ app.patch("/api/orders/:id/reject", async (req, res) => {
       data: { status: "available" },
     });
 
+    const openTableSession = await getOpenTableSessionForTableId(order.table_id);
+    if (openTableSession) {
+      await closeTableSessionById({
+        tableSessionId: openTableSession.id,
+        closedBy: "cashier",
+        closedByUserId: user.id,
+      });
+    }
+
     if (existingOrder.payment_status === "paid" && existingOrder.status !== "cancelled") {
       await prisma.session.update({
         where: { id: existingOrder.session_id },
@@ -1925,7 +2220,8 @@ app.patch("/api/orders/:id/reject", async (req, res) => {
 
     return res.json({ order: mapOrder(order), table: mapTable(table) });
   } catch (err) {
-    return sendError(res, 500, err?.message || "Server error");
+    const status = err?.status || 500;
+    return sendError(res, status, err?.message || "Server error");
   }
 });
 
@@ -1946,6 +2242,7 @@ app.patch("/api/orders/:id/kitchen-status", async (req, res) => {
     let table = await prisma.table.findUnique({ where: { id: order.table_id } });
 
     if (status === "completed") {
+      await ensureOpenTableSessionForTableId(order.table_id);
       const remaining = await prisma.order.count({
         where: {
           table_id: order.table_id,
@@ -1956,16 +2253,14 @@ app.patch("/api/orders/:id/kitchen-status", async (req, res) => {
       });
 
       if (remaining === 0) {
-        table = await prisma.table.update({
-          where: { id: order.table_id },
-          data: { status: "available" },
-        });
+        await markTableSessionDeliveredForTableId(order.table_id);
       }
     }
 
     return res.json({ order: mapOrder(order), table: mapTable(table) });
   } catch (err) {
-    return sendError(res, 500, err?.message || "Server error");
+    const status = err?.status || 500;
+    return sendError(res, status, err?.message || "Server error");
   }
 });
 
@@ -1993,6 +2288,45 @@ app.post("/api/sessions/close", async (req, res) => {
     return sendError(res, 500, err?.message || "Server error");
   }
 });
+
+async function autoCloseStaleTableSessions() {
+  const cutoff = new Date(Date.now() - getTableSessionAutoCloseMinutes() * 60 * 1000);
+  const sessions = await prisma.tableSession.findMany({
+    where: {
+      closed_at: null,
+      delivered_at: { not: null, lte: cutoff },
+    },
+    orderBy: { delivered_at: "asc" },
+    take: 100,
+  });
+
+  for (const session of sessions) {
+    try {
+      await closeTableSessionById({
+        tableSessionId: session.id,
+        closedBy: "system",
+        closedByUserId: null,
+      });
+    } catch (err) {
+      console.error(`Auto-close failed for table session ${session.id}:`, err?.message || err);
+    }
+  }
+}
+
+function startTableSessionSweeper() {
+  const intervalMs = getTableSessionSweepIntervalMinutes() * 60 * 1000;
+  const tick = () => autoCloseStaleTableSessions().catch((err) => {
+    console.error("Table session auto-close sweep failed:", err?.message || err);
+  });
+
+  void tick();
+  const handle = setInterval(tick, intervalMs);
+  if (typeof handle.unref === "function") {
+    handle.unref();
+  }
+}
+
+startTableSessionSweeper();
 
 const port = Number(process.env.PORT || process.env.SERVER_PORT || 8787);
 app.listen(port, () => {
