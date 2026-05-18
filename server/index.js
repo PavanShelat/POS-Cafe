@@ -232,6 +232,13 @@ function isPosOrderQrPaymentExpired(order) {
   return Date.now() - new Date(order.created_at).getTime() > ttlMs;
 }
 
+function getTableAutoReleaseHours() {
+  const raw = process.env.TABLE_AUTO_RELEASE_HOURS;
+  const value = raw ? Number(raw) : 24;
+  if (!Number.isFinite(value) || value <= 0) return 24;
+  return value;
+}
+
 async function requireValidCustomerSessionForTableId(tableId, customerSessionToken) {
   if (!customerSessionToken) {
     const err = new Error("Missing customer_session_token");
@@ -1946,12 +1953,14 @@ app.patch("/api/orders/:id/kitchen-status", async (req, res) => {
     let table = await prisma.table.findUnique({ where: { id: order.table_id } });
 
     if (status === "completed") {
+      const windowStart = new Date(Date.now() - getTableAutoReleaseHours() * 60 * 60 * 1000);
       const remaining = await prisma.order.count({
         where: {
           table_id: order.table_id,
           status: "confirmed",
           payment_status: "paid",
           kitchen_status: { not: "completed" },
+          created_at: { gte: windowStart },
         },
       });
 
