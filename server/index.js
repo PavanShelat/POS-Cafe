@@ -1569,6 +1569,14 @@ app.get("/api/table-sessions/open", async (req, res) => {
   try {
     await requireAuthenticatedUser(req);
 
+    if (!hasTableSessionModel(prisma)) {
+      return sendError(
+        res,
+        501,
+        "Table sessions are not available on this server yet. Apply DB migrations and redeploy (Prisma Client needs regeneration)."
+      );
+    }
+
     let sessions = await prisma.tableSession.findMany({
       where: { closed_at: null },
       include: { table: true },
@@ -1652,6 +1660,14 @@ app.post("/api/table-sessions/:id/close", async (req, res) => {
   try {
     const user = await requireAuthenticatedUser(req);
     const { id } = req.params;
+
+    if (!hasTableSessionModel(prisma)) {
+      return sendError(
+        res,
+        501,
+        "Table sessions are not available on this server yet. Apply DB migrations and redeploy (Prisma Client needs regeneration)."
+      );
+    }
 
     const updatedSession = await closeTableSessionById({
       tableSessionId: id,
