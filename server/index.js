@@ -266,7 +266,12 @@ function isPosOrderQrPaymentExpired(order) {
   return Date.now() - new Date(order.created_at).getTime() > ttlMs;
 }
 
+function hasTableSessionModel(client = prisma) {
+  return Boolean(client?.tableSession && typeof client.tableSession.findFirst === "function");
+}
+
 async function getOpenTableSessionForTableId(tableId, tx = prisma) {
+  if (!hasTableSessionModel(tx)) return null;
   return tx.tableSession.findFirst({
     where: { table_id: tableId, closed_at: null },
     orderBy: { opened_at: "desc" },
@@ -274,6 +279,7 @@ async function getOpenTableSessionForTableId(tableId, tx = prisma) {
 }
 
 async function ensureOpenTableSessionForTableId(tableId, tx = prisma) {
+  if (!hasTableSessionModel(tx)) return null;
   const existing = await getOpenTableSessionForTableId(tableId, tx);
   if (existing) return existing;
   return tx.tableSession.create({
@@ -285,6 +291,7 @@ async function ensureOpenTableSessionForTableId(tableId, tx = prisma) {
 }
 
 async function markTableSessionDeliveredForTableId(tableId, tx = prisma) {
+  if (!hasTableSessionModel(tx)) return null;
   const session = await getOpenTableSessionForTableId(tableId, tx);
   if (!session) return null;
   if (session.delivered_at) return session;
@@ -295,6 +302,11 @@ async function markTableSessionDeliveredForTableId(tableId, tx = prisma) {
 }
 
 async function closeTableSessionById({ tableSessionId, closedBy, closedByUserId = null }) {
+  if (!hasTableSessionModel(prisma)) {
+    const err = new Error("Table sessions are not available on this server.");
+    err.status = 501;
+    throw err;
+  }
   const now = new Date();
   const session = await prisma.tableSession.findUnique({ where: { id: tableSessionId } });
   if (!session) {
@@ -2290,6 +2302,7 @@ app.post("/api/sessions/close", async (req, res) => {
 });
 
 async function autoCloseStaleTableSessions() {
+  if (!hasTableSessionModel(prisma)) return;
   const cutoff = new Date(Date.now() - getTableSessionAutoCloseMinutes() * 60 * 1000);
   const sessions = await prisma.tableSession.findMany({
     where: {
@@ -2314,6 +2327,10 @@ async function autoCloseStaleTableSessions() {
 }
 
 function startTableSessionSweeper() {
+  if (!hasTableSessionModel(prisma)) {
+    console.warn("Table session sweeper disabled: prisma.tableSession model not available (run migrations + prisma generate).");
+    return;
+  }
   const intervalMs = getTableSessionSweepIntervalMinutes() * 60 * 1000;
   const tick = () => autoCloseStaleTableSessions().catch((err) => {
     console.error("Table session auto-close sweep failed:", err?.message || err);
