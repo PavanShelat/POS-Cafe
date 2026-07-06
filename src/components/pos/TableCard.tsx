@@ -6,7 +6,6 @@ import { usePOS } from '@/context/POSContext';
 interface TableCardProps {
   table: Table;
   onClick: (table: Table) => void;
-  orderCount?: number;
 }
 
 const statusConfig: Record<TableStatus, { label: string; className: string; icon?: typeof Clock }> = {
@@ -26,7 +25,7 @@ const statusConfig: Record<TableStatus, { label: string; className: string; icon
   },
 };
 
-export function TableCard({ table, onClick, orderCount = 0 }: TableCardProps) {
+export function TableCard({ table, onClick }: TableCardProps) {
   const { openCustomerSession, closeCustomerSession, releaseTable } = usePOS();
   const config = statusConfig[table.status];
   const StatusIcon = config.icon;
@@ -91,7 +90,7 @@ export function TableCard({ table, onClick, orderCount = 0 }: TableCardProps) {
       <div className="mt-3 space-y-2">
         <span
           className={cn(
-            'inline-flex px-2 py-0.5 rounded-full text-xs font-medium',
+            'inline-flex px-2 py-0.5 rounded-full text-xs font-medium self-start',
             table.status === 'available' && 'bg-status-available text-white',
             table.status === 'occupied' && 'bg-status-occupied text-white',
             table.status === 'pending_confirmation' && 'bg-status-pending text-white'
@@ -100,7 +99,7 @@ export function TableCard({ table, onClick, orderCount = 0 }: TableCardProps) {
           {config.label}
         </span>
 
-        <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center justify-between gap-2 w-full px-1">
           <button
             onClick={handleLockToggle}
             title={isUnlocked ? 'QR ordering is ON - tap to lock' : 'QR ordering is OFF - tap to unlock'}
@@ -122,20 +121,15 @@ export function TableCard({ table, onClick, orderCount = 0 }: TableCardProps) {
             )}
           </button>
 
-          <div className="flex items-center gap-2">
-            {table.status === 'occupied' && (
-              <button
-                onClick={handleRelease}
-                title="Mark table as available"
-                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-status-available text-white hover:bg-status-available/90"
-              >
-                <CheckCircle2 className="h-3 w-3" /> Done
-              </button>
-            )}
-            <div className="min-w-[52px] text-right text-xs text-muted-foreground">
-              {orderCount > 0 ? `${orderCount} order${orderCount > 1 ? 's' : ''}` : ''}
-            </div>
-          </div>
+          {table.status === 'occupied' && (
+            <button
+              onClick={handleRelease}
+              title="Mark table as available"
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-status-available text-white hover:bg-status-available/90"
+            >
+              <CheckCircle2 className="h-3 w-3" /> Done
+            </button>
+          )}
         </div>
       </div>
     </div>

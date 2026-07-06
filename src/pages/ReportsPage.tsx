@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { subDays, subMonths, format, isAfter, startOfDay } from 'date-fns';
+import { subDays, subMonths, subYears, format, isAfter, startOfDay } from 'date-fns';
 import { BarChart3, TrendingUp, ShoppingCart, DollarSign, Users, Clock, Download, Receipt, Landmark } from 'lucide-react';
 import { Bar, BarChart, CartesianGrid, Cell, Line, LineChart, Pie, PieChart, XAxis, YAxis } from 'recharts';
 import { usePOS } from '@/context/POSContext';
@@ -17,7 +17,7 @@ import {
   ChartTooltipContent,
 } from '@/components/ui/chart';
 
-type RangeFilter = 'day' | 'week' | 'month';
+type RangeFilter = 'year' | 'week' | 'month';
 
 type GstReport = {
   start_date: string;
@@ -29,9 +29,9 @@ type GstReport = {
 };
 
 const rangeOptions: { id: RangeFilter; label: string }[] = [
-  { id: 'day', label: 'Last Day' },
   { id: 'week', label: 'Last Week' },
   { id: 'month', label: 'Last Month' },
+  { id: 'year', label: 'Last Year' },
 ];
 
 const chartConfig = {
@@ -87,8 +87,8 @@ export default function ReportsPage() {
 
   const now = new Date();
   const rangeStart =
-    range === 'day'
-      ? subDays(now, 1)
+    range === 'year'
+      ? subYears(now, 1)
       : range === 'week'
         ? subDays(now, 7)
         : subMonths(now, 1);

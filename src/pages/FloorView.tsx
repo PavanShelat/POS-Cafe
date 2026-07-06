@@ -49,10 +49,6 @@ export default function FloorView() {
     setIsOrderDialogOpen(true);
   };
 
-  const getTableOrderCount = (tableId: string) => {
-    return orders.filter(o => o.table_id === tableId && o.status === 'confirmed').length;
-  };
-
   return (
     <POSLayout>
       <div className="flex h-full">
@@ -84,7 +80,6 @@ export default function FloorView() {
                       key={table.id}
                       table={table}
                       onClick={handleTableClick}
-                      orderCount={getTableOrderCount(table.id)}
                     />
                   ))}
                 </div>
