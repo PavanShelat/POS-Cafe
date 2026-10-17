@@ -2,74 +2,96 @@ import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Outlet } from "react-router-dom";
+import { lazy, Suspense } from "react";
+import { Loader2 } from "lucide-react";
 import { POSProvider } from "@/context/POSContext";
 import { AuthProvider } from "@/hooks/useAuth";
 import { ProtectedRoute } from "@/components/auth/ProtectedRoute";
 
+// Pages load on demand, so a customer scanning a table QR never downloads the
+// staff screens (reports, charts, settings) and vice versa.
+
 // POS Pages
-import FloorView from "./pages/FloorView";
-import OrdersPage from "./pages/OrdersPage";
-import KitchenDisplay from "./pages/KitchenDisplay";
-import ReportsPage from "./pages/ReportsPage";
-import SettingsPage from "./pages/SettingsPage";
-import LoginPage from "./pages/LoginPage";
-import StaffManagementPage from "./pages/StaffManagementPage";
+const FloorView = lazy(() => import("./pages/FloorView"));
+const OrdersPage = lazy(() => import("./pages/OrdersPage"));
+const KitchenDisplay = lazy(() => import("./pages/KitchenDisplay"));
+const ReportsPage = lazy(() => import("./pages/ReportsPage"));
+const SettingsPage = lazy(() => import("./pages/SettingsPage"));
+const LoginPage = lazy(() => import("./pages/LoginPage"));
+const StaffManagementPage = lazy(() => import("./pages/StaffManagementPage"));
 
 // Customer Pages
-import CustomerMenu from "./pages/customer/CustomerMenu";
-import CustomerPayment from "./pages/customer/CustomerPayment";
-import CustomerOrderStatus from "./pages/customer/CustomerOrderStatus";
-import PublicOrderPayment from "./pages/PublicOrderPayment";
-import PublicOrderTracking from "./pages/PublicOrderTracking";
+const CustomerMenu = lazy(() => import("./pages/customer/CustomerMenu"));
+const CustomerPayment = lazy(() => import("./pages/customer/CustomerPayment"));
+const CustomerOrderStatus = lazy(() => import("./pages/customer/CustomerOrderStatus"));
+const PublicOrderPayment = lazy(() => import("./pages/PublicOrderPayment"));
+const PublicOrderTracking = lazy(() => import("./pages/PublicOrderTracking"));
 
-import NotFound from "./pages/NotFound";
+const NotFound = lazy(() => import("./pages/NotFound"));
 
 const queryClient = new QueryClient();
+
+const PageLoader = () => (
+  <div className="min-h-screen flex items-center justify-center">
+    <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+  </div>
+);
+
+// Staff data (bootstrap polling) only loads once someone with a role is signed in.
+const StaffShell = () => (
+  <ProtectedRoute>
+    <POSProvider>
+      <Outlet />
+    </POSProvider>
+  </ProtectedRoute>
+);
 
 const App = () => (
   <QueryClientProvider client={queryClient}>
     <TooltipProvider>
       <AuthProvider>
-        <POSProvider>
-          <Toaster />
-          <Sonner />
-          <BrowserRouter>
+        <Toaster />
+        <Sonner />
+        <BrowserRouter>
+          <Suspense fallback={<PageLoader />}>
             <Routes>
               {/* Auth */}
               <Route path="/login" element={<LoginPage />} />
 
               {/* POS Routes - Admin & Cashier */}
-              <Route path="/" element={
-                <ProtectedRoute allowedRoles={['admin', 'cashier']}>
-                  <FloorView />
-                </ProtectedRoute>
-              } />
-              <Route path="/orders" element={
-                <ProtectedRoute allowedRoles={['admin', 'cashier']}>
-                  <OrdersPage />
-                </ProtectedRoute>
-              } />
-              <Route path="/kitchen" element={
-                <ProtectedRoute allowedRoles={['admin', 'kitchen']}>
-                  <KitchenDisplay />
-                </ProtectedRoute>
-              } />
-              <Route path="/reports" element={
-                <ProtectedRoute allowedRoles={['admin']}>
-                  <ReportsPage />
-                </ProtectedRoute>
-              } />
-              <Route path="/settings" element={
-                <ProtectedRoute allowedRoles={['admin']}>
-                  <SettingsPage />
-                </ProtectedRoute>
-              } />
-              <Route path="/staff" element={
-                <ProtectedRoute allowedRoles={['admin']}>
-                  <StaffManagementPage />
-                </ProtectedRoute>
-              } />
+              <Route element={<StaffShell />}>
+                <Route path="/" element={
+                  <ProtectedRoute allowedRoles={['admin', 'cashier']}>
+                    <FloorView />
+                  </ProtectedRoute>
+                } />
+                <Route path="/orders" element={
+                  <ProtectedRoute allowedRoles={['admin', 'cashier']}>
+                    <OrdersPage />
+                  </ProtectedRoute>
+                } />
+                <Route path="/kitchen" element={
+                  <ProtectedRoute allowedRoles={['admin', 'kitchen']}>
+                    <KitchenDisplay />
+                  </ProtectedRoute>
+                } />
+                <Route path="/reports" element={
+                  <ProtectedRoute allowedRoles={['admin']}>
+                    <ReportsPage />
+                  </ProtectedRoute>
+                } />
+                <Route path="/settings" element={
+                  <ProtectedRoute allowedRoles={['admin']}>
+                    <SettingsPage />
+                  </ProtectedRoute>
+                } />
+                <Route path="/staff" element={
+                  <ProtectedRoute allowedRoles={['admin']}>
+                    <StaffManagementPage />
+                  </ProtectedRoute>
+                } />
+              </Route>
 
               {/* Customer QR Ordering Routes - No auth needed */}
               <Route path="/order/:tableToken" element={<CustomerMenu />} />
@@ -81,8 +103,8 @@ const App = () => (
               {/* Catch-all */}
               <Route path="*" element={<NotFound />} />
             </Routes>
-          </BrowserRouter>
-        </POSProvider>
+          </Suspense>
+        </BrowserRouter>
       </AuthProvider>
     </TooltipProvider>
   </QueryClientProvider>

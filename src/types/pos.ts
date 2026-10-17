@@ -39,6 +39,9 @@ export interface Table {
   customer_session_token?: string | null;
 }
 
+// The table fields the API returns to customers who aren't logged in.
+export type PublicTable = Pick<Table, 'id' | 'table_number' | 'seats' | 'status'>;
+
 export interface Session {
   id: string;
   opened_at: string;

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { PaymentMethod, Order, Table, POSConfig } from '@/types/pos';
+import { PaymentMethod, Order, PublicTable, POSConfig } from '@/types/pos';
 import { Button } from '@/components/ui/button';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Label } from '@/components/ui/label';
@@ -9,7 +9,7 @@ import { apiGet, apiPost } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { AlertCircle, CheckCircle, CreditCard, Loader2 } from 'lucide-react';
 
-type PublicOrderResponse = { order: Order; table: Table; config: POSConfig };
+type PublicOrderResponse = { order: Order; table: PublicTable; config: POSConfig };
 
 const paymentMethods: { id: Extract<PaymentMethod, 'upi' | 'digital'>; label: string; description: string }[] = [
   { id: 'upi', label: 'UPI', description: 'Pay via UPI on Razorpay Checkout' },
@@ -41,7 +41,7 @@ export default function PublicOrderPayment() {
   const orderId = searchParams.get('order_id') || searchParams.get('orderId') || '';
 
   const [order, setOrder] = useState<Order | null>(null);
-  const [table, setTable] = useState<Table | null>(null);
+  const [table, setTable] = useState<PublicTable | null>(null);
   const [config, setConfig] = useState<POSConfig | null>(null);
   const [paymentMethod, setPaymentMethod] = useState<Extract<PaymentMethod, 'upi' | 'digital'>>('upi');
   const [isLoading, setIsLoading] = useState(true);
@@ -121,8 +121,6 @@ export default function PublicOrderPayment() {
         description: `Order ${order.invoice_number}`,
         prefill: {
           name: order.customer_name || undefined,
-          email: order.customer_email || undefined,
-          contact: order.customer_phone || undefined,
         },
         notes: {
           app_order_id: orderId,

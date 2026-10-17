@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { usePOS } from '@/context/POSContext';
+import { usePublicMenu } from '@/hooks/usePublicMenu';
 import { CartItem, Product } from '@/types/pos';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -20,21 +20,37 @@ import { cn } from '@/lib/utils';
 import { apiGet } from '@/lib/api';
 import { calculateCartSubtotal, calculateTaxSummary } from '@/lib/tax';
 
+const SESSION_POLL_MS = 5000;
+
 export default function CustomerMenu() {
   const { tableToken } = useParams();
   const navigate = useNavigate();
-  const { tables, allProducts: products, categories, config } = usePOS();
+  const {
+    table,
+    products,
+    categories,
+    config,
+    loading: menuLoading,
+    error: menuError,
+    reload: reloadMenu,
+  } = usePublicMenu(tableToken);
   const [cart, setCart] = useState<CartItem[]>([]);
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [sessionValid, setSessionValid] = useState<boolean | null>(null); // null = loading
   const [sessionCheckDone, setSessionCheckDone] = useState(false);
+  const [sessionError, setSessionError] = useState<string | null>(null);
+  const [isCheckingSession, setIsCheckingSession] = useState(false);
 
-  // Validate the customer session with the server on mount
-  useEffect(() => {
+  // Asks the server whether staff have unlocked this table. Background polls pass
+  // `silent` so a brief network blip doesn't replace the screen with an error.
+  const checkSession = useCallback(async ({ silent = false } = {}) => {
     if (!tableToken) return;
-    apiGet<{ valid: boolean; table?: object; customer_session_token?: string; reason?: string }>(
-      `/api/customer/validate-session?qr_token=${tableToken}`
-    ).then((data) => {
+    setIsCheckingSession(true);
+    try {
+      const data = await apiGet<{ valid: boolean; customer_session_token?: string; reason?: string }>(
+        `/api/customer/validate-session?qr_token=${encodeURIComponent(tableToken)}`,
+        { auth: false }
+      );
       if (data.valid && data.customer_session_token) {
         setSessionValid(true);
         sessionStorage.setItem('customerSessionToken', data.customer_session_token);
@@ -42,23 +58,53 @@ export default function CustomerMenu() {
         setSessionValid(false);
         sessionStorage.removeItem('customerSessionToken');
       }
+      setSessionError(null);
+    } catch (err) {
+      if (!silent) {
+        setSessionError(err instanceof Error ? err.message : 'Failed to check the table');
+      }
+    } finally {
+      setIsCheckingSession(false);
       setSessionCheckDone(true);
-    }).catch(() => {
-      setSessionValid(false);
-      setSessionCheckDone(true);
-    });
+    }
   }, [tableToken]);
 
-  // Find table by token (for display)
-  const table = tables.find(t => t.qr_token === tableToken);
+  useEffect(() => {
+    void checkSession();
+  }, [checkSession]);
 
-  if (tables.length === 0 || !sessionCheckDone) {
+  // While the table is locked, keep checking so the menu appears as soon as staff
+  // unlock it, without the customer having to reload.
+  useEffect(() => {
+    if (sessionValid !== false) return;
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        void checkSession({ silent: true });
+      }
+    }, SESSION_POLL_MS);
+    return () => window.clearInterval(timer);
+  }, [sessionValid, checkSession]);
+
+  if (menuLoading || !sessionCheckDone) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center p-6">
         <div className="text-center">
           <Loader2 className="h-12 w-12 mx-auto text-muted-foreground mb-4 animate-spin" />
           <h1 className="text-xl font-bold mb-2">Loading...</h1>
           <p className="text-muted-foreground">Please wait a moment</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (menuError && menuError !== 'Table not found') {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center p-6">
+        <div className="text-center">
+          <Coffee className="h-16 w-16 mx-auto text-muted-foreground mb-4" />
+          <h1 className="text-2xl font-bold mb-2">Couldn't load the menu</h1>
+          <p className="text-muted-foreground mb-4">{menuError}</p>
+          <Button onClick={() => void reloadMenu()}>Try again</Button>
         </div>
       </div>
     );
@@ -71,6 +117,22 @@ export default function CustomerMenu() {
           <Coffee className="h-16 w-16 mx-auto text-muted-foreground mb-4" />
           <h1 className="text-2xl font-bold mb-2">Invalid QR Code</h1>
           <p className="text-muted-foreground">Please scan a valid table QR code</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (sessionError) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center p-6">
+        <div className="text-center">
+          <Coffee className="h-16 w-16 mx-auto text-muted-foreground mb-4" />
+          <h1 className="text-2xl font-bold mb-2">Couldn't check your table</h1>
+          <p className="text-muted-foreground mb-4">{sessionError}</p>
+          <Button onClick={() => void checkSession()} disabled={isCheckingSession}>
+            {isCheckingSession && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+            Try again
+          </Button>
         </div>
       </div>
     );
@@ -94,22 +156,19 @@ export default function CustomerMenu() {
               Table {table.table_number}
             </span>
           </div>
+          <div className="mt-6">
+            <Button variant="outline" onClick={() => void checkSession()} disabled={isCheckingSession}>
+              {isCheckingSession && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+              Check again
+            </Button>
+          </div>
         </div>
       </div>
     );
   }
 
-  if (table.status === 'occupied') {
-    return (
-      <div className="min-h-screen bg-background flex items-center justify-center p-6">
-        <div className="text-center">
-          <Coffee className="h-16 w-16 mx-auto text-muted-foreground mb-4" />
-          <h1 className="text-2xl font-bold mb-2">Table Occupied</h1>
-          <p className="text-muted-foreground">This table currently has an active order. Please wait until it's available.</p>
-        </div>
-      </div>
-    );
-  }
+  // No "table occupied" block here: a valid session token means staff unlocked the
+  // table for these guests, so they can keep ordering rounds while seated.
 
   const filteredProducts = selectedCategory
     ? products.filter(p => p.category === selectedCategory && p.active)

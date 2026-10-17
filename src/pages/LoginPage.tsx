@@ -22,6 +22,7 @@ export default function LoginPage() {
   const [setupEmail, setSetupEmail] = useState('');
   const [setupPassword, setSetupPassword] = useState('');
   const [setupName, setSetupName] = useState('');
+  const [setupSecret, setSetupSecret] = useState('');
   const [setupLoading, setSetupLoading] = useState(false);
 
   // Redirect if already logged in
@@ -46,7 +47,7 @@ export default function LoginPage() {
     e.preventDefault();
     setSetupLoading(true);
     try {
-      await apiPost('/api/setup-admin', { email: setupEmail, password: setupPassword, full_name: setupName }, { auth: false });
+      await apiPost('/api/setup-admin', { email: setupEmail, password: setupPassword, full_name: setupName, setup_secret: setupSecret }, { auth: false });
       toast({ title: 'Admin created!', description: 'You can now sign in with your credentials.' });
       setEmail(setupEmail);
       setPassword(setupPassword);
@@ -107,6 +108,10 @@ export default function LoginPage() {
                 <div className="space-y-2">
                   <Label>Password</Label>
                   <Input type="password" value={setupPassword} onChange={e => setSetupPassword(e.target.value)} placeholder="Min 6 characters" required />
+                </div>
+                <div className="space-y-2">
+                  <Label>Setup Secret</Label>
+                  <Input type="password" value={setupSecret} onChange={e => setSetupSecret(e.target.value)} placeholder="ADMIN_SETUP_SECRET from the server" required />
                 </div>
                 <Button type="submit" className="w-full" disabled={setupLoading}>
                   {setupLoading ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <UserPlus className="h-4 w-4 mr-2" />}

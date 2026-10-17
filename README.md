@@ -54,6 +54,29 @@ This project is built with:
 - shadcn-ui
 - Tailwind CSS
 
+## Running the tests
+
+```sh
+npm test            # run everything once
+npm run test:watch  # re-run on save
+npx vitest run --project server   # API only
+npx vitest run --project web      # frontend only
+```
+
+The API tests mock Prisma and Supabase, so they never touch a real database and need no `.env`. Test files are grouped by feature:
+
+| File | Covers |
+|---|---|
+| `server/test/auth.test.js` | Login and role checks on every staff route, public routes, security headers |
+| `server/test/public.test.js` | Public menu/order endpoints never expose tokens or contact details; order status needs the order's id |
+| `server/test/orders.test.js` | Order validation (source, quantity, inactive products), QR orders forced unpaid, second rounds, reject/delete, computed sales totals, bootstrap |
+| `server/test/payments.test.js` | Razorpay order reuse and method switching, `/verify`, webhook signatures, payment counted once |
+| `server/test/admin.test.js` | First-admin setup secret, table QR tokens and unlock times, AI chat limits and privacy |
+| `server/test/*.test.js` (others) | Tax maths, IST dates, email escaping, signatures, CORS, error mapping, table re-lock |
+| `src/lib/api.test.ts` | Readable errors for HTML responses and network failures |
+| `src/lib/pendingOrder.test.ts` | Reusing an order after a cancelled checkout only when the cart is unchanged |
+| `src/pages/customer/CustomerMenu.test.tsx` | Customer menu: locked table, auto-unlock, retry on errors, second rounds, token encoding |
+
 ## How can I deploy this project?
 
 Deploy the backend to Render and the frontend to Vercel using the steps below.
@@ -64,7 +87,8 @@ Deploy the backend to Render and the frontend to Vercel using the steps below.
 
 - Create a new **Web Service** from this repo.
 - **Build Command:** `npm ci && npm run prisma:generate`
-- **Start Command:** `node server/index.js`
+- **Start Command:** `npm start`
+- **Before each deploy with schema changes:** `npx prisma migrate deploy`
 - **Environment variables (required):**
   - `DATABASE_URL`
   - `SUPABASE_URL`
@@ -72,8 +96,10 @@ Deploy the backend to Render and the frontend to Vercel using the steps below.
 - **Environment variables (optional / feature-based):**
   - `SUPABASE_JWT_SECRET` (not currently used by the server)
   - `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET`
-  - `CORS_ORIGIN` (set to your Vercel domain; if omitted the API allows all origins)
+  - `CORS_ORIGIN` (comma-separated; `*` wildcards allowed for Vercel previews. Set it in production: if omitted the API allows all origins)
   - `POS_QR_PAYMENT_TTL_MINUTES`
+  - `TABLE_AUTO_RELEASE_HOURS` (QR ordering re-locks this many hours after a table is unlocked; default 12)
+  - `ADMIN_SETUP_SECRET` (only while creating the first admin; remove afterwards)
   - `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM_EMAIL`, `SMTP_FROM_NAME`
 
 Render will provide `PORT` automatically (the server reads `PORT` first).

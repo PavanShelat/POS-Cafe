@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Order, Table } from '@/types/pos';
-import { usePOS } from '@/context/POSContext';
+import { Order, PublicTable } from '@/types/pos';
+import { usePublicMenu } from '@/hooks/usePublicMenu';
 import { apiGet, apiPost } from '@/lib/api';
 import { Coffee, Clock, ChefHat, CheckCircle, XCircle, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 type CustomerOrderStatusResponse = {
-  table: Table | null;
+  table: PublicTable | null;
   order: Order | null;
 };
 
@@ -105,8 +105,8 @@ function getOrderProgress(order: Order | null) {
 export default function CustomerOrderStatus() {
   const { tableToken } = useParams();
   const navigate = useNavigate();
-  const { config } = usePOS();
-  const [table, setTable] = useState<Table | null>(null);
+  const { config } = usePublicMenu(tableToken);
+  const [table, setTable] = useState<PublicTable | null>(null);
   const [order, setOrder] = useState<Order | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -127,7 +127,7 @@ export default function CustomerOrderStatus() {
     const fetchStatus = async () => {
       try {
         const query = orderId ? `?order_id=${encodeURIComponent(orderId)}` : '';
-        const data = await apiGet<CustomerOrderStatusResponse>(`/api/customer/order-status/${tableToken}${query}`, { auth: false });
+        const data = await apiGet<CustomerOrderStatusResponse>(`/api/customer/order-status/${encodeURIComponent(tableToken)}${query}`, { auth: false });
         if (!mounted) return;
         setTable(data.table);
         setOrder(data.order);

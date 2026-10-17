@@ -13,7 +13,7 @@ model Profile {
   full_name  String
   email      String?
   created_at DateTime @default(now())
-  updated_at DateTime @default(now())
+  updated_at DateTime @default(now()) @updatedAt
 
   @@map("profiles")
 }
@@ -32,7 +32,7 @@ model Category {
   name       String
   icon       String?
   created_at DateTime  @default(now())
-  updated_at DateTime  @default(now())
+  updated_at DateTime  @default(now()) @updatedAt
   products   Product[]
 
   @@map("categories")
@@ -47,7 +47,7 @@ model Product {
   image       String?
   description String?
   created_at  DateTime    @default(now())
-  updated_at  DateTime    @default(now())
+  updated_at  DateTime    @default(now()) @updatedAt
   order_items OrderItem[]
   category    Category?   @relation(fields: [category_id], references: [id])
 
@@ -59,25 +59,27 @@ model Floor {
   id         String   @id @default(uuid()) @db.Uuid
   name       String
   created_at DateTime @default(now())
-  updated_at DateTime @default(now())
+  updated_at DateTime @default(now()) @updatedAt
   tables     Table[]
 
   @@map("floors")
 }
 
 model Table {
-  id                     String      @id @default(uuid()) @db.Uuid
-  floor_id               String      @db.Uuid
-  table_number           String
-  seats                  Int
-  qr_token               String
-  active                 Boolean     @default(true)
-  status                 TableStatus @default(available)
-  customer_session_token String?     @unique
-  created_at             DateTime    @default(now())
-  updated_at             DateTime    @default(now())
-  orders                 Order[]
-  floor                  Floor       @relation(fields: [floor_id], references: [id])
+  id                          String      @id @default(uuid()) @db.Uuid
+  floor_id                    String      @db.Uuid
+  table_number                String
+  seats                       Int
+  qr_token                    String      @unique
+  active                      Boolean     @default(true)
+  status                      TableStatus @default(available)
+  customer_session_token      String?     @unique
+  // When staff last unlocked QR ordering; used to re-lock after TABLE_AUTO_RELEASE_HOURS.
+  customer_session_started_at DateTime?
+  created_at                  DateTime    @default(now())
+  updated_at                  DateTime    @default(now()) @updatedAt
+  orders                      Order[]
+  floor                       Floor       @relation(fields: [floor_id], references: [id])
 
   @@index([floor_id])
   @@map("tables")
@@ -91,7 +93,7 @@ model Session {
   orders_count Int       @default(0)
   is_active    Boolean   @default(true)
   created_at   DateTime  @default(now())
-  updated_at   DateTime  @default(now())
+  updated_at   DateTime  @default(now()) @updatedAt
   orders       Order[]
 
   @@map("sessions")
@@ -144,20 +146,19 @@ model OrderItem {
 }
 
 model Payment {
-  id         String        @id @default(uuid()) @db.Uuid
-  order_id   String        @db.Uuid
-  method     PaymentMethod
-  amount     Decimal       @db.Decimal(12, 2)
-  status     PaymentState  @default(pending)
-  provider   String?
-  provider_order_id   String?
-  provider_payment_id String?
+  id                  String        @id @default(uuid()) @db.Uuid
+  order_id            String        @db.Uuid
+  method              PaymentMethod
+  amount              Decimal       @db.Decimal(12, 2)
+  status              PaymentState  @default(pending)
+  provider            String?
+  provider_order_id   String?       @unique
+  provider_payment_id String?       @unique
   provider_signature  String?
-  created_at DateTime      @default(now())
-  order      Order         @relation(fields: [order_id], references: [id])
+  created_at          DateTime      @default(now())
+  order               Order         @relation(fields: [order_id], references: [id])
 
   @@index([order_id])
-  @@index([provider_order_id])
   @@map("payments")
 }
 
@@ -169,7 +170,7 @@ model POSConfig {
   currency        String
   tax_rate        Decimal  @db.Decimal(5, 2)
   created_at      DateTime @default(now())
-  updated_at      DateTime @default(now())
+  updated_at      DateTime @default(now()) @updatedAt
 
   @@map("pos_config")
 }

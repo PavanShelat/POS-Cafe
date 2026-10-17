@@ -153,7 +153,7 @@ export default function OrdersPage() {
               <SelectValue placeholder="Filter by date" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">All Time</SelectItem>
+              <SelectItem value="all">Last 12 Months</SelectItem>
               <SelectItem value="day">Last Day</SelectItem>
               <SelectItem value="week">Last Week</SelectItem>
               <SelectItem value="month">Last Month</SelectItem>

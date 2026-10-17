@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Order, POSConfig, Table } from '@/types/pos';
+import { Order, POSConfig, PublicTable } from '@/types/pos';
 import { apiGet } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -8,7 +8,7 @@ import { Badge } from '@/components/ui/badge';
 import { Loader2, RefreshCcw } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
-type PublicOrderResponse = { order: Order; table: Table; config: POSConfig };
+type PublicOrderResponse = { order: Order; table: PublicTable; config: POSConfig };
 
 function kitchenLabel(status: Order['kitchen_status']) {
   if (status === 'to_cook') return 'Queued';
@@ -22,7 +22,7 @@ export default function PublicOrderTracking() {
   const orderId = searchParams.get('order_id') || searchParams.get('orderId') || '';
 
   const [order, setOrder] = useState<Order | null>(null);
-  const [table, setTable] = useState<Table | null>(null);
+  const [table, setTable] = useState<PublicTable | null>(null);
   const [config, setConfig] = useState<POSConfig | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);

@@ -1,3 +1,5 @@
+import { formatDateForInvoice } from "./tax.js";
+
 function escapeXml(value) {
   return String(value ?? "")
     .replace(/&/g, "&amp;")
@@ -143,7 +145,7 @@ function buildGstReportWorkbook({ config, summary, orders, startDate, endDate })
     ["Invoice Number", "Date", "Customer Name", "Customer Email", "Customer Phone", "Subtotal", "Discount", "Taxable Amount", "CGST", "SGST", "Final Amount", "Status"],
     ...orders.map((order) => [
       order.invoice_number,
-      order.created_at,
+      formatDateForInvoice(order.created_at),
       order.customer_name || "Walk-in",
       order.customer_email || "",
       order.customer_phone || "",

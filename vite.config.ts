@@ -15,6 +15,20 @@ export default defineConfig(({ mode }) => ({
       "/api": "http://localhost:8787",
     },
   },
+  build: {
+    rollupOptions: {
+      output: {
+        // Libraries that rarely change get their own chunks, so browsers keep them
+        // cached across deploys and no single chunk passes Vite's 500 kB warning.
+        manualChunks(id) {
+          if (!id.includes("node_modules")) return;
+          if (id.includes("@supabase")) return "supabase";
+          if (id.includes("@radix-ui")) return "radix";
+          if (/[\\/]node_modules[\\/](react|react-dom|react-router|react-router-dom|scheduler)[\\/]/.test(id)) return "react";
+        },
+      },
+    },
+  },
   plugins: [react(), mode === "development" && componentTagger()].filter(Boolean),
   resolve: {
     alias: {

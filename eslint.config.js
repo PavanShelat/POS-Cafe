@@ -23,4 +23,19 @@ export default tseslint.config(
       "@typescript-eslint/no-unused-vars": "off",
     },
   },
+  {
+    // The Express API is plain JS; no-undef catches a missing import before it
+    // becomes a 500 in production.
+    extends: [js.configs.recommended],
+    files: ["server/**/*.js"],
+    languageOptions: {
+      ecmaVersion: 2024,
+      sourceType: "module",
+      globals: globals.node,
+    },
+    rules: {
+      // Destructuring a field away (e.g. dropping customer_email) is intentional.
+      "no-unused-vars": ["error", { args: "none", ignoreRestSiblings: true }],
+    },
+  },
 );

@@ -14,8 +14,9 @@ import { useToast } from '@/hooks/use-toast';
 import { Coffee, CreditCard, Download, Edit, MapPin, Package, Plus, QrCode, Settings, Trash2, Upload } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 
-function randomQrToken(tableNumber: string) {
-  return `qr-${tableNumber.toLowerCase()}-${Math.random().toString(36).slice(2, 8)}`;
+// Printed QR codes are only as private as their token, so it must be unguessable.
+function randomQrToken() {
+  return crypto.randomUUID();
 }
 
 export default function SettingsPage() {
@@ -50,7 +51,7 @@ export default function SettingsPage() {
   const [newFloorName, setNewFloorName] = useState('');
   const [editingFloor, setEditingFloor] = useState<{ id: string; name: string } | null>(null);
 
-  const [newTable, setNewTable] = useState({ floor_id: '', table_number: '', seats: '2', qr_token: '' });
+  const [newTable, setNewTable] = useState({ floor_id: '', table_number: '', seats: '2' });
   const [editingTableId, setEditingTableId] = useState<string | null>(null);
   const [csvRows, setCsvRows] = useState<Array<{ id: string; name: string; category: string; price: string }>>([]);
   const [csvDialogOpen, setCsvDialogOpen] = useState(false);
@@ -277,11 +278,11 @@ export default function SettingsPage() {
       floor_id: newTable.floor_id,
       table_number: tableNumber,
       seats: Number(newTable.seats),
-      qr_token: newTable.qr_token.trim() || randomQrToken(tableNumber),
+      qr_token: randomQrToken(),
       active: true,
       status: 'available',
     });
-    setNewTable({ floor_id: floors[0]?.id || '', table_number: '', seats: '2', qr_token: '' });
+    setNewTable({ floor_id: floors[0]?.id || '', table_number: '', seats: '2' });
     toast({ title: 'Table added' });
   };
 
@@ -511,7 +512,7 @@ export default function SettingsPage() {
               <CardHeader>
                 <CardTitle className="flex items-center gap-2"><QrCode className="h-5 w-5" />Add Table</CardTitle>
               </CardHeader>
-              <CardContent className="grid grid-cols-1 md:grid-cols-5 gap-3">
+              <CardContent className="grid grid-cols-1 md:grid-cols-4 gap-3">
                 <Select value={newTable.floor_id} onValueChange={(v) => setNewTable((t) => ({ ...t, floor_id: v }))}>
                   <SelectTrigger><SelectValue placeholder="Floor" /></SelectTrigger>
                   <SelectContent>
@@ -522,7 +523,6 @@ export default function SettingsPage() {
                 </Select>
                 <Input placeholder="Table No (T11)" value={newTable.table_number} onChange={(e) => setNewTable((t) => ({ ...t, table_number: e.target.value }))} />
                 <Input placeholder="Seats" type="number" value={newTable.seats} onChange={(e) => setNewTable((t) => ({ ...t, seats: e.target.value }))} />
-                <Input placeholder="QR token (optional)" value={newTable.qr_token} onChange={(e) => setNewTable((t) => ({ ...t, qr_token: e.target.value }))} />
                 <Button onClick={handleAddTable}><Plus className="h-4 w-4 mr-2" />Add Table</Button>
               </CardContent>
             </Card>
@@ -544,7 +544,21 @@ export default function SettingsPage() {
                         <Switch checked={table.active} onCheckedChange={(checked) => updateTable(table.id, { active: checked })} />
                       </div>
                       <Input defaultValue={String(table.seats)} type="number" onBlur={(e) => updateTable(table.id, { seats: Number(e.target.value) })} />
-                      <Input defaultValue={table.qr_token} onBlur={(e) => updateTable(table.id, { qr_token: e.target.value })} />
+                      <div className="flex gap-2">
+                        <Input value={table.qr_token} readOnly aria-label={`QR token for ${table.table_number}`} className="font-mono text-xs" />
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="shrink-0"
+                          onClick={async () => {
+                            if (!window.confirm(`Regenerate the QR for ${table.table_number}? The printed QR code for this table will stop working and must be reprinted.`)) return;
+                            await updateTable(table.id, { qr_token: randomQrToken() });
+                            toast({ title: `New QR generated for ${table.table_number}`, description: 'Download and reprint it.' });
+                          }}
+                        >
+                          Regenerate QR
+                        </Button>
+                      </div>
                       <div className="flex gap-2">
                         <Dialog>
                           <DialogTrigger asChild>

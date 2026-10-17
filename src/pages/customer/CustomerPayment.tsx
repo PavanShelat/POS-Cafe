@@ -1,13 +1,14 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { CartItem, Table as TableType, PaymentMethod } from '@/types/pos';
-import { usePOS } from '@/context/POSContext';
+import { CartItem, PublicTable, PaymentMethod } from '@/types/pos';
+import { usePublicMenu } from '@/hooks/usePublicMenu';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { apiPost } from '@/lib/api';
 import { calculateCartSubtotal, calculateTaxSummary } from '@/lib/tax';
+import { buildPendingOrderKey, clearPendingOrder, findReusableOrderId, savePendingOrder } from '@/lib/pendingOrder';
 import {
   ArrowLeft,
   CreditCard,
@@ -45,9 +46,9 @@ function loadRazorpayScript(): Promise<void> {
 export default function CustomerPayment() {
   const { tableToken } = useParams();
   const navigate = useNavigate();
-  const { config } = usePOS();
+  const { config } = usePublicMenu(tableToken);
   const [cart, setCart] = useState<CartItem[]>([]);
-  const [table, setTable] = useState<TableType | null>(null);
+  const [table, setTable] = useState<PublicTable | null>(null);
   const [customerName, setCustomerName] = useState('');
   const [customerEmail, setCustomerEmail] = useState('');
   const [customerPhone, setCustomerPhone] = useState('');
@@ -90,7 +91,8 @@ export default function CustomerPayment() {
 
     if (table) {
       try {
-        let orderId = sessionStorage.getItem('customerPendingOrderId');
+        const orderKey = buildPendingOrderKey(cart, { name: customerName, email: customerEmail, phone: customerPhone });
+        let orderId = findReusableOrderId(orderKey);
 
         if (!orderId) {
           const data = await apiPost<{ order: { id: string } }>('/api/orders', {
@@ -99,9 +101,6 @@ export default function CustomerPayment() {
             customer_name: customerName.trim(),
             customer_email: customerEmail.trim(),
             customer_phone: customerPhone || undefined,
-            discount: 0,
-            payment_status: 'unpaid',
-            payment_method: paymentMethod,
             customer_session_token: customerSessionToken,
             items: cart.map(item => ({
               product_id: item.product.id,
@@ -110,7 +109,7 @@ export default function CustomerPayment() {
             })),
           }, { auth: false });
           orderId = data.order.id;
-          sessionStorage.setItem('customerPendingOrderId', orderId);
+          savePendingOrder(orderId, orderKey);
         }
 
         const razorpayData = await apiPost<{
@@ -157,12 +156,11 @@ export default function CustomerPayment() {
             try {
               await apiPost('/api/payments/razorpay/verify', {
                 orderId,
-                customer_session_token: customerSessionToken,
                 ...response,
               }, { auth: false });
 
               sessionStorage.setItem('customerOrderId', orderId);
-              sessionStorage.removeItem('customerPendingOrderId');
+              clearPendingOrder();
 
               sessionStorage.removeItem('customerCart');
               sessionStorage.removeItem('customerTable');
