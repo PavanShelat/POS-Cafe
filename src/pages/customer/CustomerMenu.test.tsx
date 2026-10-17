@@ -105,6 +105,28 @@ describe('CustomerMenu', () => {
     expect(await screen.findByText('Invalid QR Code')).toBeInTheDocument();
   });
 
+  it('shows each category name once, with emoji icons but not word icons', async () => {
+    mockApi({
+      '/api/public/menu/': [{
+        ...menu(),
+        categories: [
+          { id: 'c1', name: 'Coffee', icon: 'coffee' },
+          { id: 'c2', name: 'Tea', icon: '🍵' },
+          { id: 'c3', name: 'Desserts' },
+        ],
+      }],
+      '/api/customer/validate-session': [UNLOCKED],
+    });
+    renderMenu();
+    await screen.findByText('Latte');
+    expect(screen.getByRole('button', { name: 'Coffee' })).toBeInTheDocument();
+    expect(screen.queryByText('coffee')).not.toBeInTheDocument();
+    const teaButton = screen.getByRole('button', { name: /Tea/ });
+    expect(teaButton).toHaveTextContent('🍵');
+    expect(teaButton.textContent?.match(/Tea/g)).toHaveLength(1);
+    expect(screen.getByRole('button', { name: 'Desserts' })).toBeInTheDocument();
+  });
+
   it('URL-encodes the QR token (FLOW-8)', async () => {
     mockApi({ '/api/public/menu/': [menu()], '/api/customer/validate-session': [UNLOCKED] });
     renderMenu('a&b=c d');

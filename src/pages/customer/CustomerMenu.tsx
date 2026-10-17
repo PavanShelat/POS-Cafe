@@ -16,7 +16,7 @@ import {
   Lock,
   Loader2
 } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { cn, getCategoryIcon } from '@/lib/utils';
 import { apiGet } from '@/lib/api';
 import { calculateCartSubtotal, calculateTaxSummary } from '@/lib/tax';
 
@@ -255,7 +255,7 @@ export default function CustomerMenu() {
                 onClick={() => setSelectedCategory(cat.id)}
                 className="shrink-0"
               >
-                {cat.icon ? <span className="mr-1.5">{cat.icon}</span> : null}
+                {getCategoryIcon(cat.icon) ? <span className="mr-1.5">{cat.icon}</span> : null}
                 {cat.name}
               </Button>
             ))}

@@ -9,7 +9,7 @@ import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
 import { CreditCard, Minus, Plus, QrCode, Send, ShoppingCart, Wallet } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { cn, getCategoryIcon } from '@/lib/utils';
 import { calculateTaxSummary } from '@/lib/tax';
 import { PosOrderPaymentQrDialog } from '@/components/pos/PosOrderPaymentQrDialog';
 
@@ -135,7 +135,7 @@ export function OrderDialog({ table, open, onOpenChange }: OrderDialogProps) {
               <ScrollArea className="w-full border-b">
                 <TabsList className="w-max justify-start gap-1 px-4 py-3 bg-muted/50 rounded-none">
                   {categories.map((cat) => {
-                    const showIcon = Boolean(cat.icon && /[^a-zA-Z0-9 ]/.test(cat.icon));
+                    const showIcon = Boolean(getCategoryIcon(cat.icon));
                     return (
                       <TabsTrigger
                         key={cat.id}
