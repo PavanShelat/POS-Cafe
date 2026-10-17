@@ -83,6 +83,9 @@ const GROQ_TIMEOUT_MS = 30000;
 // Staff bootstrap carries a year of orders: enough for the Reports page's longest
 // range ("Last Year") without shipping the whole history every 3 seconds.
 const BOOTSTRAP_ORDER_DAYS = 366;
+// A QR order is created when the customer taps Pay, before Razorpay opens. Until
+// the payment completes it isn't a real order, so staff screens never see it.
+const STAFF_VISIBLE_ORDERS = { NOT: { source: "customer", payment_status: "unpaid" } };
 
 // Sales are summed from the orders rather than kept as a running total, so paying,
 // rejecting or deleting an order can never leave the figure out of step.
@@ -137,6 +140,19 @@ async function completePaymentForOrder({ order, payment, providerPaymentId, prov
       data: { payment_status: "paid" },
     });
     const alreadyPaid = count !== 1;
+
+    // A QR order only reaches the POS once it's paid, so this is the moment the
+    // table starts waiting for staff. An occupied table (second round) stays occupied.
+    if (!alreadyPaid && order.source === "customer") {
+      await tx.table.updateMany({
+        where: { id: order.table_id, status: "available" },
+        data: { status: "pending_confirmation" },
+      });
+      await tx.session.update({
+        where: { id: order.session_id },
+        data: { orders_count: { increment: 1 } },
+      });
+    }
 
     await tx.payment.update({
       where: { id: payment.id },
@@ -295,6 +311,7 @@ async function buildAnalyticsContext() {
     prisma.pOSConfig.findFirst({ orderBy: { created_at: "desc" } }),
     prisma.session.findFirst({ where: { is_active: true }, orderBy: { opened_at: "desc" } }),
     prisma.order.findMany({
+      where: STAFF_VISIBLE_ORDERS,
       include: {
         items: {
           include: {
@@ -408,7 +425,7 @@ app.get("/api/bootstrap", requireStaff, async (req, res) => {
       prisma.table.findMany({ orderBy: { table_number: 'asc' } }),
       prisma.session.findFirst({ where: { is_active: true }, orderBy: { opened_at: 'desc' } }),
       prisma.order.findMany({
-        where: { created_at: { gte: getBusinessDayStart(BOOTSTRAP_ORDER_DAYS) } },
+        where: { created_at: { gte: getBusinessDayStart(BOOTSTRAP_ORDER_DAYS) }, ...STAFF_VISIBLE_ORDERS },
         include: { items: { include: { product: true } } },
         orderBy: { created_at: 'desc' },
       }),
@@ -1108,6 +1125,7 @@ app.put("/api/config", requireAdmin, async (req, res) => {
 app.get("/api/orders", requireStaff, async (req, res) => {
   try {
     const orders = await prisma.order.findMany({
+      where: STAFF_VISIBLE_ORDERS,
       include: { items: { include: { product: true } } },
       orderBy: { created_at: 'desc' },
     });
@@ -1363,20 +1381,16 @@ app.post("/api/orders", orderLimiter, async (req, res) => {
       include: { items: { include: { product: true } } },
     });
 
-    // A second round from guests already seated keeps the table occupied; the new
-    // order still shows up in the POS pending list by its own status.
-    const nextTableStatus = source === "customer" && customerTable.status !== "occupied"
-      ? "pending_confirmation"
-      : "occupied";
-    const table = await prisma.table.update({
-      where: { id: table_id },
-      data: { status: nextTableStatus },
-    });
+    // A QR order isn't real until it's paid, so the table only changes when payment
+    // completes (see completePaymentForOrder). Staff orders occupy the table now.
+    const table = source === "pos"
+      ? await prisma.table.update({ where: { id: table_id }, data: { status: "occupied" } })
+      : customerTable;
 
-    const updatedSession = await prisma.session.update({
-      where: { id: sessionId },
-      data: { orders_count: { increment: 1 } },
-    });
+    // QR orders are counted when their payment completes, like the table change.
+    const updatedSession = source === "pos"
+      ? await prisma.session.update({ where: { id: sessionId }, data: { orders_count: { increment: 1 } } })
+      : null;
 
     if (resolvedPaymentStatus === "paid") {
       try {
@@ -1681,6 +1695,14 @@ app.get("/api/orders/:id/invoice", requireCashier, async (req, res) => {
 app.patch("/api/orders/:id/confirm", requireCashier, async (req, res) => {
   try {
     const { id } = req.params;
+    const existingOrder = await prisma.order.findUnique({ where: { id } });
+    if (!existingOrder) {
+      return sendError(res, 404, "Order not found");
+    }
+    if (existingOrder.source === "customer" && existingOrder.payment_status !== "paid") {
+      return sendError(res, 400, "This order hasn't been paid yet");
+    }
+
     const order = await prisma.order.update({
       where: { id },
       data: { status: "confirmed" },

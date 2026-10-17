@@ -147,6 +147,26 @@ describe("POST /api/payments/razorpay/verify", () => {
     expect(res.body.order.customer_email).toBeUndefined();
   });
 
+  it("sends a paid QR order to the POS: the table starts waiting for confirmation", async () => {
+    await request(app).post("/api/payments/razorpay/verify").send(checkoutResponse());
+
+    // Only an available table changes; an occupied one (second round) stays occupied.
+    expect(prismaMock.table.updateMany).toHaveBeenCalledWith({
+      where: { id: ids.table, status: "available" },
+      data: { status: "pending_confirmation" },
+    });
+    expect(prismaMock.session.update).toHaveBeenCalledWith({
+      where: { id: ids.session },
+      data: { orders_count: { increment: 1 } },
+    });
+  });
+
+  it("doesn't touch the table for a staff order paid by QR", async () => {
+    prismaMock.order.findUnique.mockResolvedValue(makeOrder({ source: "pos", status: "confirmed", created_at: new Date() }));
+    await request(app).post("/api/payments/razorpay/verify").send(checkoutResponse());
+    expect(prismaMock.table.updateMany).not.toHaveBeenCalled();
+  });
+
   it("rejects a forged signature", async () => {
     const res = await request(app)
       .post("/api/payments/razorpay/verify")
@@ -173,6 +193,8 @@ describe("POST /api/payments/razorpay/verify", () => {
     expect(first.status).toBe(200);
     expect(second.status).toBe(200);
     expect(sendInvoiceEmailForOrder).toHaveBeenCalledTimes(1);
+    expect(prismaMock.table.updateMany).toHaveBeenCalledTimes(1);
+    expect(prismaMock.session.update).toHaveBeenCalledTimes(1);
   });
 });
 

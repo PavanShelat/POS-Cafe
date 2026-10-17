@@ -112,19 +112,41 @@ describe("QR customer orders (SEC-3)", () => {
   });
 });
 
-describe("second round from seated guests (FLOW-1)", () => {
-  it("marks an available table as pending confirmation for the first order", async () => {
-    mockOrderCreation({ table: makeTable({ status: "available" }) });
-    await request(app).post("/api/orders").send(customerOrder());
-    expect(prismaMock.table.update).toHaveBeenCalledWith({ where: { id: ids.table }, data: { status: "pending_confirmation" } });
-  });
-
-  it("keeps an occupied table occupied when the same guests order again", async () => {
-    mockOrderCreation({ table: makeTable({ status: "occupied" }) });
+describe("QR orders before payment", () => {
+  // The order is created when the customer taps Pay, before Razorpay opens. Nothing
+  // staff can see may change until the payment completes.
+  it.each(["available", "occupied"])("leaves a %s table unchanged when the order is placed", async (status) => {
+    mockOrderCreation({ table: makeTable({ status }) });
     const res = await request(app).post("/api/orders").send(customerOrder());
     expect(res.status).toBe(200);
-    expect(prismaMock.table.update).toHaveBeenCalledWith({ where: { id: ids.table }, data: { status: "occupied" } });
+    expect(prismaMock.table.update).not.toHaveBeenCalled();
+    expect(prismaMock.session.update).not.toHaveBeenCalled();
     expect(prismaMock.order.create.mock.calls[0][0].data.status).toBe("pending_confirmation");
+  });
+
+  it("are left out of the staff bootstrap and orders list", async () => {
+    await request(app).get("/api/bootstrap").set(authHeader("cashier"));
+    await request(app).get("/api/orders").set(authHeader("cashier"));
+    for (const [args] of prismaMock.order.findMany.mock.calls) {
+      expect(args.where.NOT).toEqual({ source: "customer", payment_status: "unpaid" });
+    }
+    expect(prismaMock.order.findMany).toHaveBeenCalledTimes(2);
+  });
+
+  it("can't be confirmed by staff", async () => {
+    prismaMock.order.findUnique.mockResolvedValue(makeOrder({ payment_status: "unpaid" }));
+    const res = await request(app).patch(`/api/orders/${ids.order}/confirm`).set(authHeader("cashier"));
+    expect(res.status).toBe(400);
+    expect(prismaMock.order.update).not.toHaveBeenCalled();
+  });
+
+  it("can be confirmed once paid", async () => {
+    prismaMock.order.findUnique.mockResolvedValue(makeOrder({ payment_status: "paid" }));
+    prismaMock.order.update.mockResolvedValue(makeOrder({ payment_status: "paid", status: "confirmed" }));
+    prismaMock.table.update.mockResolvedValue(makeTable({ status: "occupied" }));
+    const res = await request(app).patch(`/api/orders/${ids.order}/confirm`).set(authHeader("cashier"));
+    expect(res.status).toBe(200);
+    expect(prismaMock.table.update).toHaveBeenCalledWith({ where: { id: ids.table }, data: { status: "occupied" } });
   });
 });
 
@@ -142,6 +164,8 @@ describe("POS orders", () => {
     expect(data.discount).toBe(20);
     expect(data.status).toBe("confirmed");
     expect(data.payments.create).toMatchObject({ method: "cash", status: "completed" });
+    expect(prismaMock.table.update).toHaveBeenCalledWith({ where: { id: ids.table }, data: { status: "occupied" } });
+    expect(prismaMock.session.update).toHaveBeenCalledWith({ where: { id: ids.session }, data: { orders_count: { increment: 1 } } });
   });
 
   it("rejects an unknown payment_status or payment_method", async () => {
