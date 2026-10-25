@@ -34,3 +34,6 @@ supabase/.temp
 *.sw?
 
 docs/
+
+.impeccable
+FIXES.md
